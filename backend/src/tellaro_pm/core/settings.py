@@ -112,6 +112,7 @@ class Settings(BaseSettings):
 
     # Default local admin (bootstrap — always available regardless of auth provider)
     DEFAULT_ADMIN_USERNAME: str = get_default_setting("auth", "default_admin_username", "admin")
+    DEFAULT_ADMIN_EMAIL: str = get_default_setting("auth", "default_admin_email", "admin@localhost.dev")
     DEFAULT_ADMIN_PASSWORD: str = get_default_setting("auth", "default_admin_password", "Admin1234!")
 
     # Logging

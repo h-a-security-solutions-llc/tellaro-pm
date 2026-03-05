@@ -35,7 +35,7 @@ class AuthService:
 
         user_service.create({
             "username": settings.DEFAULT_ADMIN_USERNAME,
-            "email": f"{settings.DEFAULT_ADMIN_USERNAME}@local",
+            "email": settings.DEFAULT_ADMIN_EMAIL,
             "display_name": "Administrator",
             "password": settings.DEFAULT_ADMIN_PASSWORD,
             "role": "admin",
