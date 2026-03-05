@@ -6,6 +6,7 @@ Resolution order (highest priority first):
   3. Default values
 """
 
+import logging
 import os
 import secrets
 import string
@@ -99,6 +100,12 @@ class Settings(BaseSettings):
     AUTH_GITHUB_CLIENT_SECRET: str = get_default_setting("auth", "github_client_secret", "")
     AUTH_GITHUB_ORG: str = get_default_setting("auth", "github_org", "")
 
+    # GitHub App (server-to-server operations)
+    GITHUB_APP_ID: str = get_default_setting("github", "app_id", "")
+    GITHUB_APP_PRIVATE_KEY_PATH: str = get_default_setting("github", "app_private_key_path", "")
+    GITHUB_APP_INSTALLATION_ID: str = get_default_setting("github", "app_installation_id", "")
+    GITHUB_WEBHOOK_SECRET: str = get_default_setting("github", "webhook_secret", "")
+
     # Authentication - OIDC (Okta, Azure AD, Keycloak, etc.)
     AUTH_OIDC_DISCOVERY_URL: str = get_default_setting("auth", "oidc_discovery_url", "")
     AUTH_OIDC_CLIENT_ID: str = get_default_setting("auth", "oidc_client_id", "")
@@ -106,9 +113,13 @@ class Settings(BaseSettings):
     AUTH_OIDC_SCOPES: str = get_default_setting("auth", "oidc_scopes", "openid profile email")
 
     # Authentication - JWT
-    JWT_SECRET_KEY: str = get_default_setting("auth", "jwt_secret_key", _random_secret(32))
+    JWT_SECRET_KEY: str = get_default_setting("auth", "jwt_secret_key", "")
     JWT_ALGORITHM: str = "HS256"
-    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = get_default_setting("auth", "access_token_expire_minutes", 1440)
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = get_default_setting("auth", "access_token_expire_minutes", 15)
+    JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = get_default_setting("auth", "refresh_token_expire_days", 30)
+    MAX_DEVICE_SESSIONS: int = get_default_setting("auth", "max_device_sessions", 10)
+    AUTH_RATE_LIMIT_WINDOW: int = get_default_setting("auth", "rate_limit_window", 900)
+    AUTH_RATE_LIMIT_MAX: int = get_default_setting("auth", "rate_limit_max", 15)
 
     # Default local admin (bootstrap — always available regardless of auth provider)
     DEFAULT_ADMIN_USERNAME: str = get_default_setting("auth", "default_admin_username", "admin")
@@ -139,11 +150,27 @@ class Settings(BaseSettings):
         return v if isinstance(v, list) else [str(v)]  # pyright: ignore[reportUnnecessaryIsInstance]
 
     @model_validator(mode="after")
+    def ensure_jwt_secret(self) -> "Settings":
+        if not self.JWT_SECRET_KEY:
+            generated = _random_secret(64)
+            object.__setattr__(self, "JWT_SECRET_KEY", generated)
+            logging.getLogger("tellaro_pm.settings").warning(
+                "AUTH_JWT_SECRET_KEY is not set — generated a random key. "
+                "Sessions will NOT survive backend restarts. "
+                "Set AUTH_JWT_SECRET_KEY in .env for persistent sessions."
+            )
+        return self
+
+    @model_validator(mode="after")
     def adjust_opensearch_replicas(self) -> "Settings":
-        object.__setattr__(self, "OPENSEARCH_NUMBER_OF_REPLICAS", min(
-            int(self.OPENSEARCH_NUMBER_OF_REPLICAS),
-            len(self.OPENSEARCH_HOSTS),
-        ))
+        object.__setattr__(
+            self,
+            "OPENSEARCH_NUMBER_OF_REPLICAS",
+            min(
+                int(self.OPENSEARCH_NUMBER_OF_REPLICAS),
+                len(self.OPENSEARCH_HOSTS),
+            ),
+        )
         return self
 
     model_config = SettingsConfigDict(case_sensitive=True)

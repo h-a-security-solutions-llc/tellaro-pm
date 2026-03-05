@@ -44,6 +44,12 @@ playwright-report/
 # Docker
 docker-compose.override.yml
 
+# Rust
+agent/target/
+
+# Agent release binaries (committed by CI only)
+agent/releases/
+
 # Logs
 logs/
 *.log

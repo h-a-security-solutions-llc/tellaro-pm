@@ -89,10 +89,13 @@ class ConnectionManager:
             await self._handle_capability_report(agent_id, message)
         else:
             logger.warning("Unknown message type '%s' from agent %s", msg_type, agent_id)
-            await self.send_to_agent(agent_id, {
-                "type": "error",
-                "detail": f"Unknown message type: {msg_type}",
-            })
+            await self.send_to_agent(
+                agent_id,
+                {
+                    "type": "error",
+                    "detail": f"Unknown message type: {msg_type}",
+                },
+            )
 
     # --- Internal handlers ---
 
@@ -101,10 +104,13 @@ class ConnectionManager:
         status_value = message.get("status", "online")
         active_items = message.get("active_work_item_ids", [])
 
-        agent_service.heartbeat(agent_id, {
-            "status": status_value,
-            "active_work_item_ids": active_items,
-        })
+        agent_service.heartbeat(
+            agent_id,
+            {
+                "status": status_value,
+                "active_work_item_ids": active_items,
+            },
+        )
 
         await self.send_to_agent(agent_id, {"type": "heartbeat_ack"})
 
@@ -112,10 +118,13 @@ class ConnectionManager:
         """Process a work item status update from an agent."""
         item_id = message.get("work_item_id")
         if not isinstance(item_id, str):
-            await self.send_to_agent(agent_id, {
-                "type": "error",
-                "detail": "work_item_update requires a 'work_item_id' string field",
-            })
+            await self.send_to_agent(
+                agent_id,
+                {
+                    "type": "error",
+                    "detail": "work_item_update requires a 'work_item_id' string field",
+                },
+            )
             return
 
         update_data: dict[str, object] = {}
@@ -131,17 +140,23 @@ class ConnectionManager:
 
         updated = work_dispatch_service.update_work_item(item_id, update_data)
         if updated is None:
-            await self.send_to_agent(agent_id, {
-                "type": "error",
-                "detail": f"Work item {item_id} not found",
-            })
+            await self.send_to_agent(
+                agent_id,
+                {
+                    "type": "error",
+                    "detail": f"Work item {item_id} not found",
+                },
+            )
             return
 
-        await self.send_to_agent(agent_id, {
-            "type": "work_item_ack",
-            "work_item_id": item_id,
-            "status": updated.get("status"),
-        })
+        await self.send_to_agent(
+            agent_id,
+            {
+                "type": "work_item_ack",
+                "work_item_id": item_id,
+                "status": updated.get("status"),
+            },
+        )
 
     async def _handle_capability_report(self, agent_id: str, message: dict[str, Any]) -> None:
         """Process a capability report from an agent (e.g., after plugin load)."""
@@ -156,10 +171,13 @@ class ConnectionManager:
             from tellaro_pm.core.opensearch import AGENTS_INDEX, CRUDService
 
             crud = CRUDService(AGENTS_INDEX)
-            crud.update(agent_id, {
-                "capabilities": capabilities,
-                "updated_at": datetime.now(UTC).isoformat(),
-            })
+            crud.update(
+                agent_id,
+                {
+                    "capabilities": capabilities,
+                    "updated_at": datetime.now(UTC).isoformat(),
+                },
+            )
 
         await self.send_to_agent(agent_id, {"type": "capability_ack"})
 
@@ -168,19 +186,25 @@ class ConnectionManager:
         personas = agent_service.list_personas(agent_id=agent_id)
         active_personas = [p for p in personas if p.get("is_active", True)]
 
-        await self.send_to_agent(agent_id, {
-            "type": "persona_sync",
-            "personas": active_personas,
-        })
+        await self.send_to_agent(
+            agent_id,
+            {
+                "type": "persona_sync",
+                "personas": active_personas,
+            },
+        )
 
     async def _push_queued_work(self, agent_id: str) -> None:
         """Push any queued work items to a newly connected agent."""
         queued_items = work_dispatch_service.list_queued_for_agent(agent_id)
         for item in queued_items:
-            await self.send_to_agent(agent_id, {
-                "type": "work_item_dispatch",
-                "work_item": item,
-            })
+            await self.send_to_agent(
+                agent_id,
+                {
+                    "type": "work_item_dispatch",
+                    "work_item": item,
+                },
+            )
 
     async def dispatch_work_item(self, agent_id: str, work_item: dict[str, object]) -> bool:
         """Dispatch a work item to a connected agent in real-time.
@@ -188,10 +212,13 @@ class ConnectionManager:
         If the agent is not connected, the item stays queued and will be
         pushed when the agent reconnects.
         """
-        sent = await self.send_to_agent(agent_id, {
-            "type": "work_item_dispatch",
-            "work_item": work_item,
-        })
+        sent = await self.send_to_agent(
+            agent_id,
+            {
+                "type": "work_item_dispatch",
+                "work_item": work_item,
+            },
+        )
         if sent:
             # Mark as running since the agent received it
             work_dispatch_service.update_work_item(str(work_item["id"]), {"status": WorkItemStatus.RUNNING})

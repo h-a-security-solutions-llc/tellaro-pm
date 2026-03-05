@@ -80,10 +80,13 @@ async def agent_websocket(
             raw: object = await websocket.receive_json()
 
             if not isinstance(raw, dict):
-                await connection_manager.send_to_agent(agent_id, {
-                    "type": "error",
-                    "detail": "Messages must be JSON objects",
-                })
+                await connection_manager.send_to_agent(
+                    agent_id,
+                    {
+                        "type": "error",
+                        "detail": "Messages must be JSON objects",
+                    },
+                )
                 continue
 
             message = cast("dict[str, Any]", raw)

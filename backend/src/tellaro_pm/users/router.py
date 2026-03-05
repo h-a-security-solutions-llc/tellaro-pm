@@ -56,7 +56,9 @@ async def update_user(user_id: str, body: UserUpdate, current_user: CurrentUser)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot update other users")
 
     if not is_admin and (body.role is not None or body.is_active is not None):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only admins can change role or active status")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Only admins can change role or active status"
+        )
 
     update_data = body.model_dump(exclude_unset=True)
 

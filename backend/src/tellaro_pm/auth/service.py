@@ -33,14 +33,16 @@ class AuthService:
         if existing is not None:
             return
 
-        user_service.create({
-            "username": settings.DEFAULT_ADMIN_USERNAME,
-            "email": settings.DEFAULT_ADMIN_EMAIL,
-            "display_name": "Administrator",
-            "password": settings.DEFAULT_ADMIN_PASSWORD,
-            "role": "admin",
-            "auth_provider": "local",
-        })
+        user_service.create(
+            {
+                "username": settings.DEFAULT_ADMIN_USERNAME,
+                "email": settings.DEFAULT_ADMIN_EMAIL,
+                "display_name": "Administrator",
+                "password": settings.DEFAULT_ADMIN_PASSWORD,
+                "role": "admin",
+                "auth_provider": "local",
+            }
+        )
         logger.info("Default admin user '%s' created", settings.DEFAULT_ADMIN_USERNAME)
 
     # ------------------------------------------------------------------
@@ -64,9 +66,11 @@ class AuthService:
 
         return user
 
-    def create_token_for_user(self, user: dict[str, object]) -> str:
+    def create_access_token_for_user(self, user: dict[str, object], session_id: str | None = None) -> str:
         user_id = str(user["id"])
         extra: dict[str, object] = {"role": user.get("role", "member"), "email": user.get("email", "")}
+        if session_id:
+            extra["sid"] = session_id
         return create_access_token(user_id, extra)
 
     # ------------------------------------------------------------------
@@ -83,7 +87,9 @@ class AuthService:
         if existing is not None:
             return existing
 
-        username = str(provider_user_info.get("login") or provider_user_info.get("preferred_username") or email.split("@")[0])
+        username = str(
+            provider_user_info.get("login") or provider_user_info.get("preferred_username") or email.split("@")[0]
+        )
         display_name = str(provider_user_info.get("name") or username)
         avatar_url = str(provider_user_info.get("avatar_url") or provider_user_info.get("picture") or "")
 
@@ -91,21 +97,23 @@ class AuthService:
         if user_service.get_by_username(username) is not None:
             username = f"{username}-{secrets.token_hex(3)}"
 
-        return user_service.create({
-            "username": username,
-            "email": email,
-            "display_name": display_name,
-            "avatar_url": avatar_url or None,
-            "role": "member",
-            "auth_provider": provider,
-            "auth_provider_id": str(provider_user_info.get("id", "")),
-        })
+        return user_service.create(
+            {
+                "username": username,
+                "email": email,
+                "display_name": display_name,
+                "avatar_url": avatar_url or None,
+                "role": "member",
+                "auth_provider": provider,
+                "auth_provider_id": str(provider_user_info.get("id", "")),
+            }
+        )
 
     # ------------------------------------------------------------------
     # Domain-based auth discovery
     # ------------------------------------------------------------------
 
-    def discover_auth_provider(self, email: str) -> tuple[AuthProvider, str | None]:
+    async def discover_auth_provider(self, email: str) -> tuple[AuthProvider, str | None]:
         """Given an email, determine which auth provider handles that domain.
 
         Returns (provider_name, redirect_url_or_none).
@@ -121,7 +129,7 @@ class AuthService:
         if provider == "github":
             redirect_url = self.github_authorize_url()
         elif provider == "oidc":
-            redirect_url = self.oidc_authorize_url()
+            redirect_url = await self.oidc_authorize_url_async()
 
         return provider, redirect_url
 
@@ -241,7 +249,11 @@ class AuthService:
 
         async with httpx.AsyncClient() as client:
             # Append well-known path if not already present
-            discovery_url = url if url.endswith("/.well-known/openid-configuration") else f"{url.rstrip('/')}/.well-known/openid-configuration"
+            discovery_url = (
+                url
+                if url.endswith("/.well-known/openid-configuration")
+                else f"{url.rstrip('/')}/.well-known/openid-configuration"
+            )
             resp = await client.get(discovery_url)
             resp.raise_for_status()
             config: dict[str, object] = resp.json()

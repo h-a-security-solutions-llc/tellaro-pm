@@ -1,12 +1,16 @@
 import type {
+  AgentBinary,
   AgentInstallation,
   AgentPersona,
   AuthDiscoveryResponse,
   ChatMessage,
   ChatSession,
+  DeviceSession,
   DomainAuthConfig,
   Paginated,
   Project,
+  ProvisioningToken,
+  ProvisioningTokenCreated,
   Task,
   TaskStatus,
   TokenResponse,
@@ -23,6 +27,8 @@ import type {
 const API_BASE = '/api/v1'
 
 let _token: string | null = localStorage.getItem('auth_token')
+let _refreshToken: string | null = localStorage.getItem('refresh_token')
+let _refreshPromise: Promise<boolean> | null = null
 
 export function setToken(token: string | null): void {
   _token = token
@@ -30,6 +36,15 @@ export function setToken(token: string | null): void {
     localStorage.setItem('auth_token', token)
   } else {
     localStorage.removeItem('auth_token')
+  }
+}
+
+export function setRefreshToken(token: string | null): void {
+  _refreshToken = token
+  if (token) {
+    localStorage.setItem('refresh_token', token)
+  } else {
+    localStorage.removeItem('refresh_token')
   }
 }
 
@@ -48,9 +63,46 @@ export class ApiError extends Error {
   }
 }
 
+/** Attempt to refresh the access token. Returns true on success. */
+async function tryRefresh(): Promise<boolean> {
+  if (!_refreshToken) return false
+
+  try {
+    const response = await fetch(`${API_BASE}/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: _refreshToken }),
+    })
+
+    if (!response.ok) {
+      return false
+    }
+
+    const data = (await response.json()) as TokenResponse
+    setToken(data.access_token)
+    setRefreshToken(data.refresh_token)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Centralized logout: clears tokens and redirects to login.
+ * Called when both access and refresh tokens are invalid.
+ */
+function forceLogout(): void {
+  setToken(null)
+  setRefreshToken(null)
+  // Only redirect if not already on the login page
+  if (!window.location.pathname.startsWith('/login')) {
+    window.location.href = '/login'
+  }
+}
+
 export async function apiFetch<T>(
   path: string,
-  options?: RequestInit,
+  options?: RequestInit & { _isRetry?: boolean },
 ): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -65,6 +117,26 @@ export async function apiFetch<T>(
     ...options,
     headers,
   })
+
+  // Handle 401: try refresh once, then force logout
+  if (response.status === 401 && !options?._isRetry) {
+    // Deduplicate concurrent refresh attempts
+    if (!_refreshPromise) {
+      _refreshPromise = tryRefresh().finally(() => {
+        _refreshPromise = null
+      })
+    }
+
+    const refreshed = await _refreshPromise
+    if (refreshed) {
+      // Retry the original request with the new token
+      return apiFetch<T>(path, { ...options, _isRetry: true })
+    }
+
+    // Refresh failed — force logout
+    forceLogout()
+    throw new ApiError(401, 'Unauthorized')
+  }
 
   if (!response.ok) {
     let body: unknown
@@ -124,24 +196,53 @@ export const api = {
       })
     },
 
+    refresh(refreshToken: string) {
+      return apiFetch<TokenResponse>('/auth/refresh', {
+        method: 'POST',
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      })
+    },
+
     githubCallback(code: string) {
-      return apiFetch<TokenResponse>(`/auth/github/callback${qs({ code })}`)
+      return apiFetch<TokenResponse>('/auth/github/callback', {
+        method: 'POST',
+        body: JSON.stringify({ code, state: 'x', provider: 'github' }),
+      })
     },
 
     oidcCallback(code: string, state?: string) {
-      return apiFetch<TokenResponse>(`/auth/oidc/callback${qs({ code, state })}`)
+      return apiFetch<TokenResponse>('/auth/oidc/callback', {
+        method: 'POST',
+        body: JSON.stringify({ code, state: state ?? 'x', provider: 'oidc' }),
+      })
     },
 
     me() {
       return apiFetch<User>('/auth/me')
+    },
+
+    logout() {
+      return apiFetch<void>('/auth/logout', { method: 'POST' })
+    },
+
+    sessions() {
+      return apiFetch<DeviceSession[]>('/auth/sessions')
+    },
+
+    deleteSession(sessionId: string) {
+      return apiFetch<void>(`/auth/sessions/${sessionId}`, { method: 'DELETE' })
+    },
+
+    revokeAllSessions() {
+      return apiFetch<{ revoked: number }>('/auth/sessions/revoke-all', { method: 'POST' })
     },
   },
 
   /* ------ users --------------------------------------------------- */
 
   users: {
-    list(page = 1, pageSize = 50) {
-      return apiFetch<Paginated<User>>(`/users${qs({ page, page_size: pageSize })}`)
+    list(params?: { skip?: number; limit?: number; role?: string; q?: string }) {
+      return apiFetch<{ users: User[]; total: number }>(`/users${qs(params ?? {})}`)
     },
 
     get(id: string) {
@@ -317,6 +418,35 @@ export const api = {
 
     deletePersona(id: string) {
       return apiFetch<void>(`/personas/${id}`, { method: 'DELETE' })
+    },
+  },
+
+  /* ------ agent provisioning --------------------------------------- */
+
+  provisioning: {
+    createToken(data: { label?: string; expires_hours?: number }) {
+      return apiFetch<ProvisioningTokenCreated>('/agents/provisioning/tokens', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      })
+    },
+
+    listTokens() {
+      return apiFetch<ProvisioningToken[]>('/agents/provisioning/tokens')
+    },
+
+    revokeToken(tokenId: string) {
+      return apiFetch<void>(`/agents/provisioning/tokens/${tokenId}`, {
+        method: 'DELETE',
+      })
+    },
+
+    listBinaries() {
+      return apiFetch<AgentBinary[]>('/agents/provisioning/binaries')
+    },
+
+    binaryDownloadUrl(version: string, filename: string) {
+      return `${API_BASE}/agents/provisioning/binaries/${version}/${filename}`
     },
   },
 

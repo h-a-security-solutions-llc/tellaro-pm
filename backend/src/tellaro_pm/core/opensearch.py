@@ -18,6 +18,8 @@ WORK_ITEMS_INDEX = f"{INDEX_PREFIX}tellaro-pm-work-items"
 WORK_REQUESTS_INDEX = f"{INDEX_PREFIX}tellaro-pm-work-requests"
 ACTIVITY_INDEX = f"{INDEX_PREFIX}tellaro-pm-activity"
 AUTH_DOMAINS_INDEX = f"{INDEX_PREFIX}tellaro-pm-auth-domains"
+DEVICE_SESSIONS_INDEX = f"{INDEX_PREFIX}tellaro-pm-device-sessions"
+PROVISIONING_TOKENS_INDEX = f"{INDEX_PREFIX}tellaro-pm-provisioning-tokens"
 
 _client: OpenSearch | None = None
 
@@ -283,6 +285,42 @@ INDEX_MAPPINGS: dict[str, dict[str, object]] = {
                 "is_active": {"type": "boolean"},
                 "created_at": {"type": "date"},
                 "updated_at": {"type": "date"},
+            }
+        }
+    },
+    DEVICE_SESSIONS_INDEX: {
+        "mappings": {
+            "properties": {
+                "id": {"type": "keyword"},
+                "user_id": {"type": "keyword"},
+                "device_id": {"type": "keyword"},
+                "refresh_token_hash": {"type": "keyword"},
+                "device_name": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                "browser": {"type": "keyword"},
+                "browser_version": {"type": "keyword"},
+                "os": {"type": "keyword"},
+                "os_version": {"type": "keyword"},
+                "device_type": {"type": "keyword"},
+                "ip_address": {"type": "ip"},
+                "last_ip": {"type": "ip"},
+                "is_active": {"type": "boolean"},
+                "last_used_at": {"type": "date"},
+                "created_at": {"type": "date"},
+            }
+        }
+    },
+    PROVISIONING_TOKENS_INDEX: {
+        "mappings": {
+            "properties": {
+                "id": {"type": "keyword"},
+                "user_id": {"type": "keyword"},
+                "label": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                "token_hash": {"type": "keyword"},
+                "expires_hours": {"type": "integer"},
+                "is_used": {"type": "boolean"},
+                "is_revoked": {"type": "boolean"},
+                "used_at": {"type": "date"},
+                "created_at": {"type": "date"},
             }
         }
     },

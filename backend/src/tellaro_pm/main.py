@@ -8,12 +8,15 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from tellaro_pm.admin.router import router as admin_router
+from tellaro_pm.agents.provisioning_router import router as provisioning_router
 from tellaro_pm.agents.router import router as agents_router
 from tellaro_pm.auth.router import router as auth_router
 from tellaro_pm.auth.service import auth_service
 from tellaro_pm.chat.router import router as chat_router
 from tellaro_pm.core.opensearch import ensure_indices
 from tellaro_pm.core.settings import settings
+from tellaro_pm.core.tql_router import router as tql_router
 from tellaro_pm.github_integration.router import router as github_router
 from tellaro_pm.projects.router import router as projects_router
 from tellaro_pm.tasks.router import router as tasks_router
@@ -62,14 +65,17 @@ app.add_middleware(
 )
 
 # Register routers
+app.include_router(admin_router)
 app.include_router(auth_router)
 app.include_router(users_router)
 app.include_router(projects_router)
 app.include_router(tasks_router)
 app.include_router(chat_router)
 app.include_router(agents_router)
+app.include_router(provisioning_router)
 app.include_router(github_router)
 app.include_router(websocket_router)
+app.include_router(tql_router)
 
 
 @app.get("/health")

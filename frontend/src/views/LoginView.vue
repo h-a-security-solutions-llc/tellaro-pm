@@ -2,8 +2,15 @@
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { setRefreshToken, setToken } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import type { AuthDiscoveryResponse } from '@/types'
+
+const props = defineProps<{
+  provider?: 'github' | 'oidc'
+  code?: string
+  state?: string
+}>()
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -16,19 +23,28 @@ const step = ref<'email' | 'password' | 'oauth'>('email')
 const discovery = ref<AuthDiscoveryResponse | null>(null)
 
 onMounted(async () => {
-  /* Handle OAuth callback */
-  const code = route.query.code as string | undefined
-  const provider = route.query.provider as 'github' | 'oidc' | undefined
-  const state = route.query.state as string | undefined
+  /* Handle OAuth callback — props from callback routes, or query params as fallback */
+  const code = props.code || (route.query.code as string | undefined)
+  const provider = props.provider || (route.query.provider as 'github' | 'oidc' | undefined)
+  const state = props.state || (route.query.state as string | undefined)
 
-  if (code && provider) {
+  if (code && provider && !auth.isAuthenticated) {
+    // Clear any existing local tokens before attempting OAuth exchange —
+    // a failed callback must never leave old tokens around.
+    // Don't call backend logout (no valid token may exist yet).
+    setToken(null)
+    setRefreshToken(null)
+    step.value = 'oauth'
     try {
       await auth.handleOAuthCallback(provider, code, state)
-      const redirect = (route.query.redirect as string) || '/'
-      await router.push(redirect)
+      await router.replace('/')
     } catch {
       error.value = 'OAuth login failed. Please try again.'
+      step.value = 'email'
     }
+  } else if (code && provider && auth.isAuthenticated) {
+    // Already authenticated (remount from v-if/v-else RouterView switch) — just navigate away
+    await router.replace('/')
   }
 })
 
@@ -132,6 +148,9 @@ function resetFlow(): void {
         <button class="btn btn-primary login-btn" @click="handleOAuthRedirect">
           Continue with {{ discovery?.display_name ?? discovery?.provider }}
         </button>
+        <button type="button" class="link-btn login-fallback" @click="step = 'password'">
+          Sign in with password instead
+        </button>
       </div>
     </div>
   </div>
@@ -204,5 +223,12 @@ function resetFlow(): void {
 
 .link-btn:hover {
   text-decoration: underline;
+}
+
+.login-fallback {
+  display: block;
+  width: 100%;
+  text-align: center;
+  margin-top: 12px;
 }
 </style>

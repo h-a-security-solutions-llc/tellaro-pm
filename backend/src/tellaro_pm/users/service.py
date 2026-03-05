@@ -21,7 +21,9 @@ class UserService:
         query: dict[str, object] = {"query": {"term": {"username": username}}}
         return self._crud.search_one(query)
 
-    def list_users(self, *, skip: int = 0, limit: int = 50, role: str | None = None) -> tuple[list[dict[str, object]], int]:
+    def list_users(
+        self, *, skip: int = 0, limit: int = 50, role: str | None = None
+    ) -> tuple[list[dict[str, object]], int]:
         filters: list[dict[str, object]] = []
         if role:
             filters.append({"term": {"role": role}})

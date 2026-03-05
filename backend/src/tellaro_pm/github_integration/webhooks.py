@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
-import os
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -263,12 +262,10 @@ def get_webhook_secret() -> str:
     """Return the webhook secret from settings.
 
     Falls back to ``AUTH_GITHUB_CLIENT_SECRET`` when no dedicated
-    ``GITHUB_WEBHOOK_SECRET`` environment variable is configured.
+    ``GITHUB_WEBHOOK_SECRET`` is configured.
     """
-    # Check for a dedicated webhook secret first (env var GITHUB_WEBHOOK_SECRET).
-    secret = os.getenv("GITHUB_WEBHOOK_SECRET", "")
-    if secret:
-        return secret
+    if settings.GITHUB_WEBHOOK_SECRET:
+        return settings.GITHUB_WEBHOOK_SECRET
 
     # Fall back to the GitHub client secret for convenience.
     return settings.AUTH_GITHUB_CLIENT_SECRET

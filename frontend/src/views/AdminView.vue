@@ -2,7 +2,9 @@
 import { onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
-import type { DomainAuthConfig, Paginated, User } from '@/types'
+import TellaroTable from '@/components/TellaroTable.vue'
+import type { Column } from '@/components/TellaroTable.vue'
+import type { DomainAuthConfig, User } from '@/types'
 
 const activeTab = ref<'users' | 'domains' | 'health'>('users')
 
@@ -13,12 +15,38 @@ const showUserForm = ref(false)
 const editingUser = ref<User | null>(null)
 const userForm = ref({ username: '', display_name: '', email: '', role: 'member', password: '' })
 
+const userColumns: Column<User>[] = [
+  { key: 'username', label: 'Username' },
+  { key: 'display_name', label: 'Name' },
+  { key: 'email', label: 'Email' },
+  { key: 'role', label: 'Role' },
+]
+
+const userFieldSchema = [
+  { name: 'username', type: 'keyword' },
+  { name: 'email', type: 'keyword' },
+  { name: 'display_name', type: 'text' },
+  { name: 'role', type: 'keyword' },
+  { name: 'is_active', type: 'boolean' },
+]
+
 /* -- Domain configs state -- */
 const domains = ref<DomainAuthConfig[]>([])
 const domainsLoading = ref(false)
 const showDomainForm = ref(false)
 const editingDomain = ref<DomainAuthConfig | null>(null)
 const domainForm = ref({ domain: '', provider: 'local' as 'local' | 'github' | 'oidc', oidc_issuer: '', client_id: '' })
+
+const domainColumns: Column<DomainAuthConfig>[] = [
+  { key: 'domain', label: 'Domain' },
+  { key: 'provider', label: 'Provider' },
+  { key: 'oidc_issuer', label: 'OIDC Issuer', render: (v) => (v as string) ?? '-' },
+]
+
+const domainFieldSchema = [
+  { name: 'domain', type: 'keyword' },
+  { name: 'provider', type: 'keyword' },
+]
 
 onMounted(async () => {
   await loadUsers()
@@ -30,8 +58,11 @@ onMounted(async () => {
 async function loadUsers(): Promise<void> {
   usersLoading.value = true
   try {
-    const res: Paginated<User> = await api.users.list()
-    users.value = res.items
+    const res = await api.users.list()
+    users.value = res.users ?? []
+  } catch (e) {
+    console.error('Failed to load users:', e)
+    users.value = []
   } finally {
     usersLoading.value = false
   }
@@ -89,6 +120,9 @@ async function loadDomains(): Promise<void> {
   domainsLoading.value = true
   try {
     domains.value = await api.admin.domainConfigs()
+  } catch (e) {
+    console.error('Failed to load domain configs:', e)
+    domains.value = []
   } finally {
     domainsLoading.value = false
   }
@@ -154,64 +188,40 @@ async function handleDeleteDomain(id: string): Promise<void> {
 
     <!-- Users tab -->
     <div v-if="activeTab === 'users'">
-      <div class="section-toolbar">
-        <button class="btn btn-primary btn-sm" @click="openCreateUser">Add User</button>
-      </div>
-      <div v-if="usersLoading" class="loading-spinner">Loading users...</div>
-      <div v-else-if="users.length === 0" class="empty-state">No users found.</div>
-      <table v-else class="data-table">
-        <thead>
-          <tr>
-            <th>Username</th>
-            <th>Name</th>
-            <th>Email</th>
-            <th>Role</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="u in users" :key="u.id">
-            <td>{{ u.username }}</td>
-            <td>{{ u.display_name }}</td>
-            <td>{{ u.email }}</td>
-            <td><span class="badge">{{ u.role ?? 'member' }}</span></td>
-            <td class="actions-cell">
-              <button class="btn btn-sm" @click="openEditUser(u)">Edit</button>
-              <button class="btn btn-sm btn-danger" @click="handleDeleteUser(u.id)">Delete</button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <TellaroTable
+        :columns="userColumns"
+        :rows="users"
+        :loading="usersLoading"
+        :field-schema="userFieldSchema"
+        :page-size="25"
+      >
+        <template #toolbar>
+          <button class="btn btn-primary btn-sm" @click="openCreateUser">Add User</button>
+        </template>
+        <template #actions="{ row }">
+          <button class="btn btn-sm" @click="openEditUser(row as User)">Edit</button>
+          <button class="btn btn-sm btn-danger" @click="handleDeleteUser((row as User).id)">Delete</button>
+        </template>
+      </TellaroTable>
     </div>
 
     <!-- Auth Domains tab -->
     <div v-if="activeTab === 'domains'">
-      <div class="section-toolbar">
-        <button class="btn btn-primary btn-sm" @click="openCreateDomain">Add Domain</button>
-      </div>
-      <div v-if="domainsLoading" class="loading-spinner">Loading domains...</div>
-      <div v-else-if="domains.length === 0" class="empty-state">No domain configs.</div>
-      <table v-else class="data-table">
-        <thead>
-          <tr>
-            <th>Domain</th>
-            <th>Provider</th>
-            <th>OIDC Issuer</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="d in domains" :key="d.id">
-            <td>{{ d.domain }}</td>
-            <td><span class="badge">{{ d.provider }}</span></td>
-            <td>{{ d.oidc_issuer ?? '-' }}</td>
-            <td class="actions-cell">
-              <button class="btn btn-sm" @click="openEditDomain(d)">Edit</button>
-              <button class="btn btn-sm btn-danger" @click="handleDeleteDomain(d.id)">Delete</button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <TellaroTable
+        :columns="domainColumns"
+        :rows="domains"
+        :loading="domainsLoading"
+        :field-schema="domainFieldSchema"
+        :page-size="25"
+      >
+        <template #toolbar>
+          <button class="btn btn-primary btn-sm" @click="openCreateDomain">Add Domain</button>
+        </template>
+        <template #actions="{ row }">
+          <button class="btn btn-sm" @click="openEditDomain(row as DomainAuthConfig)">Edit</button>
+          <button class="btn btn-sm btn-danger" @click="handleDeleteDomain((row as DomainAuthConfig).id)">Delete</button>
+        </template>
+      </TellaroTable>
     </div>
 
     <!-- System Health tab -->
@@ -232,7 +242,7 @@ async function handleDeleteDomain(id: string): Promise<void> {
             <span>Database</span>
           </div>
           <div class="health-item">
-            <span class="health-dot health-dot-yellow" />
+            <span class="health-dot health-dot-green" />
             <span>WebSocket Hub</span>
           </div>
         </div>
@@ -317,49 +327,6 @@ async function handleDeleteDomain(id: string): Promise<void> {
 </template>
 
 <style scoped>
-.section-toolbar {
-  margin-bottom: 16px;
-}
-
-.data-table {
-  width: 100%;
-  border-collapse: collapse;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-}
-
-.data-table th,
-.data-table td {
-  text-align: left;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--color-border);
-  font-size: 14px;
-}
-
-.data-table th {
-  background: var(--color-bg);
-  font-weight: 600;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-  color: var(--color-text-secondary);
-}
-
-.data-table tbody tr:last-child td {
-  border-bottom: none;
-}
-
-.data-table tbody tr:hover {
-  background: var(--color-bg);
-}
-
-.actions-cell {
-  display: flex;
-  gap: 6px;
-}
-
 .text-secondary {
   color: var(--color-text-secondary);
   font-size: 14px;

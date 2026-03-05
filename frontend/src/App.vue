@@ -11,8 +11,8 @@ onMounted(async () => {
   await auth.init()
 })
 
-function handleLogout(): void {
-  auth.logout()
+async function handleLogout(): Promise<void> {
+  await auth.logout()
   router.push('/login')
 }
 </script>
@@ -40,6 +40,10 @@ function handleLogout(): void {
         <RouterLink to="/agents" class="nav-link">
           <span class="nav-icon">&#9881;</span>
           Agents
+        </RouterLink>
+        <RouterLink to="/settings" class="nav-link">
+          <span class="nav-icon">&#9878;</span>
+          Settings
         </RouterLink>
         <RouterLink v-if="auth.isAdmin" to="/admin" class="nav-link">
           <span class="nav-icon">&#9874;</span>

@@ -18,7 +18,13 @@ class OAuthCallbackRequest(BaseModel):
 
 class TokenResponse(BaseModel):
     access_token: str
+    refresh_token: str
     token_type: str = "bearer"
+    expires_in: int  # seconds until access_token expires
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=1)
 
 
 class AuthDiscoveryRequest(BaseModel):
@@ -50,3 +56,18 @@ class AuthDomainResponse(BaseModel):
     is_active: bool
     created_at: str
     updated_at: str
+
+
+class DeviceSessionResponse(BaseModel):
+    id: str
+    device_name: str
+    browser: str
+    browser_version: str
+    os: str
+    os_version: str
+    device_type: str
+    ip_address: str
+    last_ip: str
+    is_current: bool = False
+    last_used_at: str
+    created_at: str

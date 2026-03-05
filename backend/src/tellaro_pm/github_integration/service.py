@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import UTC, datetime
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import httpx
+from cryptography.hazmat.primitives import serialization
 
 from tellaro_pm.core.models import BaseDocument
 from tellaro_pm.core.opensearch import TASKS_INDEX, CRUDService
+from tellaro_pm.core.settings import settings
 from tellaro_pm.github_integration.schemas import GitHubIssue, GitHubPR, GitHubRepo
+
+if TYPE_CHECKING:
+    from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +52,140 @@ class GitHubNotFoundError(GitHubAPIError):
         super().__init__(404, f"Resource not found: {resource}")
 
 
+class GitHubAppNotConfiguredError(Exception):
+    """Raised when GitHub App settings are missing."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "GitHub App is not configured. Set GITHUB_APP_ID, "
+            "GITHUB_APP_PRIVATE_KEY_PATH, and GITHUB_APP_INSTALLATION_ID."
+        )
+
+
+# ---------------------------------------------------------------------------
+# GitHub App JWT generation
+# ---------------------------------------------------------------------------
+
+_cached_private_key: PrivateKeyTypes | None = None
+
+
+def _load_private_key() -> PrivateKeyTypes:
+    """Load and cache the GitHub App private key from disk."""
+    global _cached_private_key
+    if _cached_private_key is not None:
+        return _cached_private_key
+
+    key_path = Path(settings.GITHUB_APP_PRIVATE_KEY_PATH)
+    if not key_path.is_file():
+        msg = f"GitHub App private key not found at {key_path}"
+        raise FileNotFoundError(msg)
+
+    key_data = key_path.read_bytes()
+    _cached_private_key = serialization.load_pem_private_key(key_data, password=None)
+    return _cached_private_key
+
+
+def _generate_app_jwt() -> str:
+    """Generate a short-lived JWT for authenticating as the GitHub App.
+
+    The JWT is valid for 10 minutes (GitHub's maximum).
+    Uses RS256 with the App's private key via the cryptography library.
+    """
+    import base64
+    import json
+
+    from cryptography.hazmat.primitives.asymmetric.padding import PKCS1v15
+    from cryptography.hazmat.primitives.hashes import SHA256
+
+    private_key = _load_private_key()
+    now = int(time.time())
+
+    header = {"alg": "RS256", "typ": "JWT"}
+    payload = {
+        "iat": now - 60,  # 60s clock drift allowance
+        "exp": now + (10 * 60),  # 10 minute expiry
+        "iss": settings.GITHUB_APP_ID,
+    }
+
+    def _b64url(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+    header_b64 = _b64url(json.dumps(header, separators=(",", ":")).encode())
+    payload_b64 = _b64url(json.dumps(payload, separators=(",", ":")).encode())
+
+    signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
+    signature: bytes = private_key.sign(signing_input, PKCS1v15(), SHA256())  # type: ignore[union-attr]
+
+    return f"{header_b64}.{payload_b64}.{_b64url(signature)}"  # pyright: ignore[reportUnknownArgumentType]
+
+
+# ---------------------------------------------------------------------------
+# Installation access token cache
+# ---------------------------------------------------------------------------
+
+_installation_token: str = ""
+_installation_token_expires_at: float = 0.0
+
+
+def _get_installation_token() -> str:
+    """Obtain (or return cached) installation access token for the GitHub App.
+
+    Tokens are valid for 1 hour; we refresh when < 5 minutes remain.
+    """
+    global _installation_token, _installation_token_expires_at
+
+    if _installation_token and time.time() < _installation_token_expires_at - 300:
+        return _installation_token
+
+    jwt_token = _generate_app_jwt()
+    response = httpx.post(
+        f"{GITHUB_API_BASE}/app/installations/{settings.GITHUB_APP_INSTALLATION_ID}/access_tokens",
+        headers={
+            "Authorization": f"Bearer {jwt_token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        timeout=30.0,
+    )
+    response.raise_for_status()
+    data = response.json()
+
+    _installation_token = data["token"]
+    # Parse the expiry; GitHub returns ISO 8601 e.g. "2024-01-01T00:00:00Z"
+    expires_str: str = data.get("expires_at", "")
+    if expires_str:
+        _installation_token_expires_at = datetime.fromisoformat(expires_str.replace("Z", "+00:00")).timestamp()
+    else:
+        # Default to 55 minutes from now if parsing fails
+        _installation_token_expires_at = time.time() + 3300
+
+    logger.info("Obtained GitHub App installation token (expires %s)", expires_str)
+    return _installation_token
+
+
+def is_github_app_configured() -> bool:
+    """Return True if all required GitHub App settings are present."""
+    return bool(settings.GITHUB_APP_ID and settings.GITHUB_APP_PRIVATE_KEY_PATH and settings.GITHUB_APP_INSTALLATION_ID)
+
+
+def get_app_github_service() -> GitHubService:
+    """Create a GitHubService authenticated as the GitHub App installation.
+
+    Raises ``GitHubAppNotConfiguredError`` if settings are missing.
+    """
+    if not is_github_app_configured():
+        raise GitHubAppNotConfiguredError
+    token = _get_installation_token()
+    return GitHubService(token)
+
+
 # ---------------------------------------------------------------------------
 # GitHubService — thin wrapper around the GitHub REST API
 # ---------------------------------------------------------------------------
 
 
 class GitHubService:
-    """Communicate with the GitHub REST API using a personal or OAuth access token."""
+    """Communicate with the GitHub REST API using a personal, OAuth, or App installation token."""
 
     def __init__(self, access_token: str) -> None:
         self._client = httpx.Client(
@@ -85,6 +219,10 @@ class GitHubService:
 
         response.raise_for_status()
         return response.json()
+
+    def ping(self) -> Any:
+        """Quick connectivity check against the GitHub API."""
+        return self._request("GET", "/app")
 
     def _get(self, url: str, **kwargs: Any) -> Any:
         return self._request("GET", url, **kwargs)

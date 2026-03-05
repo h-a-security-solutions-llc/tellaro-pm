@@ -20,7 +20,9 @@ from tellaro_pm.github_integration.service import (
     GitHubNotFoundError,
     GitHubRateLimitError,
     GitHubService,
+    get_app_github_service,
     github_sync_service,
+    is_github_app_configured,
 )
 from tellaro_pm.github_integration.webhooks import dispatch_webhook, get_webhook_secret, verify_webhook_signature
 
@@ -37,28 +39,35 @@ router = APIRouter(
 # ---------------------------------------------------------------------------
 
 
-def _get_github_token(
+def _get_github_service(
     user: dict[str, object],
     x_github_token: str | None = None,
-) -> str:
-    """Resolve a usable GitHub access token.
+) -> GitHubService:
+    """Resolve a GitHubService instance.
 
     Priority:
-    1. Explicit ``X-GitHub-Token`` header (passed through by the caller).
-    2. ``github_access_token`` stored on the user document (from OAuth flow).
+    1. GitHub App installation token (if configured — preferred for read operations).
+    2. Explicit ``X-GitHub-Token`` header.
+    3. ``github_access_token`` stored on the user document (from OAuth flow).
 
-    Raises ``HTTPException(401)`` when no token is available.
+    Raises ``HTTPException(401)`` when no auth method is available.
     """
+    if is_github_app_configured():
+        try:
+            return get_app_github_service()
+        except Exception:
+            logger.warning("GitHub App token acquisition failed; falling back to user token")
+
     if x_github_token:
-        return x_github_token
+        return GitHubService(x_github_token)
 
     stored_token = user.get("github_access_token")
     if isinstance(stored_token, str) and stored_token:
-        return stored_token
+        return GitHubService(stored_token)
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="No GitHub token available. Pass an X-GitHub-Token header or authenticate via GitHub OAuth.",
+        detail=("No GitHub authentication available. Configure the GitHub App or pass an X-GitHub-Token header."),
     )
 
 
@@ -92,7 +101,6 @@ def list_repos(
     x_github_token: Annotated[str | None, Header()] = None,
 ) -> list[GitHubRepo]:
     """List repositories for the configured GitHub organisation."""
-    token = _get_github_token(user, x_github_token)
     org = settings.AUTH_GITHUB_ORG
     if not org:
         raise HTTPException(
@@ -100,7 +108,7 @@ def list_repos(
             detail="AUTH_GITHUB_ORG is not configured on the server.",
         )
 
-    gh = GitHubService(token)
+    gh = _get_github_service(user, x_github_token)
     try:
         return gh.list_org_repos(org)
     except GitHubAPIError as exc:
@@ -117,8 +125,7 @@ def list_issues(
     state: str = "open",
 ) -> list[GitHubIssue]:
     """List issues for a specific repository."""
-    token = _get_github_token(user, x_github_token)
-    gh = GitHubService(token)
+    gh = _get_github_service(user, x_github_token)
     try:
         return gh.list_issues(owner, name, state=state)
     except GitHubAPIError as exc:
@@ -133,8 +140,7 @@ def sync_repo(
     x_github_token: Annotated[str | None, Header()] = None,
 ) -> SyncResponse:
     """Sync a GitHub repository's issues into a Tellaro project's tasks."""
-    token = _get_github_token(user, x_github_token)
-    gh = GitHubService(token)
+    gh = _get_github_service(user, x_github_token)
 
     try:
         issues_synced = github_sync_service.sync_issues_to_tasks(
@@ -150,6 +156,33 @@ def sync_repo(
 
     # PR sync can be added later; for now report 0.
     return SyncResponse(issues_synced=issues_synced, prs_synced=0)
+
+
+@router.get("/status")
+def github_status(
+    user: Annotated[dict[str, object], Depends(get_current_user)],
+) -> dict[str, object]:
+    """Return the current GitHub integration configuration status."""
+    app_configured = is_github_app_configured()
+    org = settings.AUTH_GITHUB_ORG
+
+    result: dict[str, object] = {
+        "github_app_configured": app_configured,
+        "github_app_id": settings.GITHUB_APP_ID or None,
+        "github_org": org or None,
+    }
+
+    if app_configured:
+        try:
+            gh = get_app_github_service()
+            # Quick connectivity check
+            gh.ping()
+            result["github_app_connected"] = True
+        except Exception as exc:
+            result["github_app_connected"] = False
+            result["github_app_error"] = str(exc)
+
+    return result
 
 
 @router.post("/webhooks", status_code=status.HTTP_200_OK)

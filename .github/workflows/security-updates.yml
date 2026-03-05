@@ -1,0 +1,375 @@
+---
+name: Monthly Security Updates
+
+on:
+  schedule:
+    # Run at 9 AM UTC on the 1st of every month
+    - cron: '0 9 1 * *'
+  workflow_dispatch:
+    inputs:
+      poetry_dirs:
+        description: 'Poetry directories (comma-separated, empty to skip)'
+        default: 'backend'
+        type: string
+      npm_dirs:
+        description: 'npm directories (comma-separated, empty to skip)'
+        default: 'frontend'
+        type: string
+      cargo_dirs:
+        description: 'Cargo workspace directories (comma-separated, empty to skip)'
+        default: 'agent'
+        type: string
+      branch_suffix:
+        description: 'Branch suffix (default: YYYY-MM-DD, or custom like "2026-03-05-hotfix")'
+        default: ''
+        type: string
+
+# Default values for scheduled runs
+env:
+  DEFAULT_POETRY_DIRS: 'backend'
+  DEFAULT_NPM_DIRS: 'frontend'
+  DEFAULT_CARGO_DIRS: 'agent'
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '22'
+  RUST_VERSION: 'stable'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  security-updates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set update directories
+        id: dirs
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            POETRY_DIRS="${{ inputs.poetry_dirs }}"
+            NPM_DIRS="${{ inputs.npm_dirs }}"
+            CARGO_DIRS="${{ inputs.cargo_dirs }}"
+          else
+            POETRY_DIRS="${{ env.DEFAULT_POETRY_DIRS }}"
+            NPM_DIRS="${{ env.DEFAULT_NPM_DIRS }}"
+            CARGO_DIRS="${{ env.DEFAULT_CARGO_DIRS }}"
+          fi
+
+          echo "poetry_dirs=${POETRY_DIRS}" >> $GITHUB_OUTPUT
+          echo "npm_dirs=${NPM_DIRS}" >> $GITHUB_OUTPUT
+          echo "cargo_dirs=${CARGO_DIRS}" >> $GITHUB_OUTPUT
+
+          if [ -z "$POETRY_DIRS" ] && [ -z "$NPM_DIRS" ] && [ -z "$CARGO_DIRS" ]; then
+            echo "No directories specified for updates"
+            exit 1
+          fi
+
+      - name: Create branch name
+        id: branch
+        run: |
+          DATE=$(date +'%Y-%m-%d')
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.branch_suffix }}" ]; then
+            BRANCH_SUFFIX="${{ inputs.branch_suffix }}"
+          else
+            BRANCH_SUFFIX="${DATE}"
+          fi
+
+          BRANCH_NAME="security/${BRANCH_SUFFIX}"
+          echo "name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+          echo "date=${DATE}" >> $GITHUB_OUTPUT
+
+      - name: Setup Python
+        if: steps.dirs.outputs.poetry_dirs != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Poetry
+        if: steps.dirs.outputs.poetry_dirs != ''
+        run: |
+          python -m pip install --upgrade pip
+          pip install poetry
+
+      - name: Setup Node.js
+        if: steps.dirs.outputs.npm_dirs != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Rust
+        if: steps.dirs.outputs.cargo_dirs != ''
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Create security update branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b ${{ steps.branch.outputs.name }}
+
+      - name: Run Poetry updates
+        id: poetry-updates
+        if: steps.dirs.outputs.poetry_dirs != ''
+        run: |
+          POETRY_DIRS="${{ steps.dirs.outputs.poetry_dirs }}"
+          UPDATES_SUMMARY=""
+          HAS_CHANGES="false"
+
+          IFS=',' read -ra DIRS <<< "$POETRY_DIRS"
+
+          for dir in "${DIRS[@]}"; do
+            dir=$(echo "$dir" | xargs)
+
+            if [ "$dir" = "." ]; then
+              WORK_DIR="."
+              DIR_LABEL="root"
+            else
+              WORK_DIR="$dir"
+              DIR_LABEL="$dir"
+            fi
+
+            if [ -f "$WORK_DIR/pyproject.toml" ]; then
+              echo "Updating Poetry dependencies in $DIR_LABEL..."
+
+              cd "$WORK_DIR"
+
+              # Capture before state
+              BEFORE=$(poetry show --outdated 2>/dev/null || echo "")
+
+              # Run poetry update
+              poetry update --no-interaction
+
+              # Capture after state and check for changes
+              if git diff --quiet poetry.lock 2>/dev/null; then
+                echo "No changes in $DIR_LABEL"
+              else
+                HAS_CHANGES="true"
+                UPDATES_SUMMARY="${UPDATES_SUMMARY}\n### Poetry ($DIR_LABEL)\n\`\`\`\n$(git diff --stat poetry.lock)\n\`\`\`\n"
+              fi
+
+              cd - > /dev/null
+            else
+              echo "Warning: No pyproject.toml found in $WORK_DIR"
+            fi
+          done
+
+          echo "has_changes=${HAS_CHANGES}" >> $GITHUB_OUTPUT
+          {
+            echo "summary<<EOF"
+            echo -e "$UPDATES_SUMMARY"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Run npm updates
+        id: npm-updates
+        if: steps.dirs.outputs.npm_dirs != ''
+        run: |
+          NPM_DIRS="${{ steps.dirs.outputs.npm_dirs }}"
+          UPDATES_SUMMARY=""
+          HAS_CHANGES="false"
+
+          IFS=',' read -ra DIRS <<< "$NPM_DIRS"
+
+          for dir in "${DIRS[@]}"; do
+            dir=$(echo "$dir" | xargs)
+
+            if [ "$dir" = "." ]; then
+              WORK_DIR="."
+              DIR_LABEL="root"
+            else
+              WORK_DIR="$dir"
+              DIR_LABEL="$dir"
+            fi
+
+            if [ -f "$WORK_DIR/package.json" ]; then
+              echo "Updating npm dependencies in $DIR_LABEL..."
+
+              cd "$WORK_DIR"
+
+              if [ ! -d "node_modules" ]; then
+                npm ci || npm install
+              fi
+
+              npm update
+
+              if git diff --quiet package-lock.json 2>/dev/null; then
+                echo "No changes in $DIR_LABEL"
+              else
+                HAS_CHANGES="true"
+                UPDATES_SUMMARY="${UPDATES_SUMMARY}\n### npm ($DIR_LABEL)\n\`\`\`\n$(git diff --stat package-lock.json)\n\`\`\`\n"
+              fi
+
+              cd - > /dev/null
+            else
+              echo "Warning: No package.json found in $WORK_DIR"
+            fi
+          done
+
+          echo "has_changes=${HAS_CHANGES}" >> $GITHUB_OUTPUT
+          {
+            echo "summary<<EOF"
+            echo -e "$UPDATES_SUMMARY"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Run Cargo updates
+        id: cargo-updates
+        if: steps.dirs.outputs.cargo_dirs != ''
+        run: |
+          CARGO_DIRS="${{ steps.dirs.outputs.cargo_dirs }}"
+          UPDATES_SUMMARY=""
+          HAS_CHANGES="false"
+
+          IFS=',' read -ra DIRS <<< "$CARGO_DIRS"
+
+          for dir in "${DIRS[@]}"; do
+            dir=$(echo "$dir" | xargs)
+
+            if [ "$dir" = "." ]; then
+              WORK_DIR="."
+              DIR_LABEL="workspace root"
+            else
+              WORK_DIR="$dir"
+              DIR_LABEL="$dir"
+            fi
+
+            if [ -f "$WORK_DIR/Cargo.toml" ]; then
+              echo "Updating Cargo dependencies in $DIR_LABEL..."
+
+              cd "$WORK_DIR"
+
+              cargo update
+
+              if git diff --quiet Cargo.lock 2>/dev/null; then
+                echo "No changes in $DIR_LABEL"
+              else
+                HAS_CHANGES="true"
+                UPDATED_CRATES=$(git diff Cargo.lock | grep "^+name = " | sed 's/^+name = "\(.*\)"/\1/' | head -20 || echo "")
+                if [ -n "$UPDATED_CRATES" ]; then
+                  UPDATES_SUMMARY="${UPDATES_SUMMARY}\n### Cargo ($DIR_LABEL)\nUpdated crates:\n\`\`\`\n${UPDATED_CRATES}\n\`\`\`\n\n\`\`\`\n$(git diff --stat Cargo.lock)\n\`\`\`\n"
+                else
+                  UPDATES_SUMMARY="${UPDATES_SUMMARY}\n### Cargo ($DIR_LABEL)\n\`\`\`\n$(git diff --stat Cargo.lock)\n\`\`\`\n"
+                fi
+              fi
+
+              cd - > /dev/null
+            else
+              echo "Warning: No Cargo.toml found in $WORK_DIR"
+            fi
+          done
+
+          echo "has_changes=${HAS_CHANGES}" >> $GITHUB_OUTPUT
+          {
+            echo "summary<<EOF"
+            echo -e "$UPDATES_SUMMARY"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet && git diff --staged --quiet; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No dependency changes detected"
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "Changes detected, will create PR"
+          fi
+
+      - name: Commit and push changes
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          git add -A
+          git commit -m "Security update - ${{ steps.branch.outputs.date }}
+
+          Automated dependency updates for security patches.
+
+          Co-Authored-By: github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+          git push origin ${{ steps.branch.outputs.name }}
+
+      - name: Create Pull Request
+        if: steps.changes.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          POETRY_SUMMARY: ${{ steps.poetry-updates.outputs.summary }}
+          NPM_SUMMARY: ${{ steps.npm-updates.outputs.summary }}
+          CARGO_SUMMARY: ${{ steps.cargo-updates.outputs.summary }}
+        run: |
+          cat > pr_body.md << 'PREOF'
+          ## Security Dependency Updates - ${{ steps.branch.outputs.date }}
+
+          This PR contains automated dependency updates for security patches.
+
+          ## Changes
+          PREOF
+
+          if [ -n "$POETRY_SUMMARY" ]; then
+            echo "" >> pr_body.md
+            echo "$POETRY_SUMMARY" >> pr_body.md
+          fi
+
+          if [ -n "$NPM_SUMMARY" ]; then
+            echo "" >> pr_body.md
+            echo "$NPM_SUMMARY" >> pr_body.md
+          fi
+
+          if [ -n "$CARGO_SUMMARY" ]; then
+            echo "" >> pr_body.md
+            echo "$CARGO_SUMMARY" >> pr_body.md
+          fi
+
+          cat >> pr_body.md << 'PREOF'
+
+          ## Review Checklist
+
+          - [ ] Review updated dependencies for breaking changes
+          - [ ] Run tests locally if needed
+          - [ ] Verify application functionality after merge
+
+          ---
+          *This PR was automatically generated by the security-updates workflow.*
+          PREOF
+
+          gh label create "security" --description "Security-related changes" --color "D93F0B" 2>/dev/null || true
+          gh label create "dependencies" --description "Dependency updates" --color "0366D6" 2>/dev/null || true
+          gh label create "automated" --description "Automated PR" --color "6F42C1" 2>/dev/null || true
+          gh label create "rust" --description "Rust-related changes" --color "DEA584" 2>/dev/null || true
+
+          LABELS="security,dependencies,automated"
+          if [ -n "$CARGO_SUMMARY" ]; then
+            LABELS="${LABELS},rust"
+          fi
+
+          gh pr create \
+            --title "Security Update - ${{ steps.branch.outputs.date }}" \
+            --body-file pr_body.md \
+            --base ${{ github.ref_name }} \
+            --head ${{ steps.branch.outputs.name }} \
+            --label "$LABELS"
+
+          rm -f pr_body.md
+
+      - name: Summary
+        run: |
+          if [ "${{ steps.changes.outputs.has_changes }}" = "true" ]; then
+            echo "## Security Updates Summary" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Branch: \`${{ steps.branch.outputs.name }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Components updated:" >> $GITHUB_STEP_SUMMARY
+            echo "- Backend (poetry): ${{ steps.dirs.outputs.poetry_dirs }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Frontend (npm): ${{ steps.dirs.outputs.npm_dirs }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Rust Agent (cargo): ${{ steps.dirs.outputs.cargo_dirs }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "A pull request has been created for review." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## No Updates Required" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "All dependencies are already up to date." >> $GITHUB_STEP_SUMMARY
+          fi

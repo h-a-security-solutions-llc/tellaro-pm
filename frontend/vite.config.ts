@@ -11,6 +11,12 @@ export default defineConfig({
     },
   },
   server: {
+    host: '0.0.0.0',
+    allowedHosts: ['pm.tellaro.io'],
+    hmr: {
+      host: 'pm.tellaro.io',
+      protocol: 'wss',
+    },
     proxy: {
       '/api': {
         target: 'http://localhost:8000',

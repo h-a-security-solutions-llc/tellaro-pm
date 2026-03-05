@@ -3,8 +3,11 @@ import { ref } from 'vue'
 
 import { api } from '@/api/client'
 import type {
+  AgentBinary,
   AgentInstallation,
   AgentPersona,
+  ProvisioningToken,
+  ProvisioningTokenCreated,
   WorkItem,
   WorkItemStatus,
   WorkRequest,
@@ -15,6 +18,8 @@ export const useAgentsStore = defineStore('agents', () => {
   const personas = ref<AgentPersona[]>([])
   const workItems = ref<WorkItem[]>([])
   const workRequests = ref<WorkRequest[]>([])
+  const provisioningTokens = ref<ProvisioningToken[]>([])
+  const binaries = ref<AgentBinary[]>([])
   const isLoading = ref(false)
 
   /* -- agents ------------------------------------------------------ */
@@ -105,11 +110,49 @@ export const useAgentsStore = defineStore('agents', () => {
     if (idx !== -1) workRequests.value[idx] = updated
   }
 
+  /* -- provisioning tokens ----------------------------------------- */
+
+  async function fetchProvisioningTokens(): Promise<void> {
+    isLoading.value = true
+    try {
+      provisioningTokens.value = await api.provisioning.listTokens()
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function createProvisioningToken(data: {
+    label?: string
+    expires_hours?: number
+  }): Promise<ProvisioningTokenCreated> {
+    const result = await api.provisioning.createToken(data)
+    await fetchProvisioningTokens()
+    return result
+  }
+
+  async function revokeProvisioningToken(tokenId: string): Promise<void> {
+    await api.provisioning.revokeToken(tokenId)
+    await fetchProvisioningTokens()
+  }
+
+  /* -- binaries ---------------------------------------------------- */
+
+  async function fetchBinaries(): Promise<void> {
+    isLoading.value = true
+    try {
+      binaries.value = await api.provisioning.listBinaries()
+    } finally {
+      isLoading.value = false
+    }
+  }
+
   return {
     agents,
     personas,
     workItems,
     workRequests,
+    provisioningTokens,
+    binaries,
     isLoading,
     fetchAgents,
     fetchPersonas,
@@ -119,5 +162,9 @@ export const useAgentsStore = defineStore('agents', () => {
     fetchWorkRequests,
     approveRequest,
     rejectRequest,
+    fetchProvisioningTokens,
+    createProvisioningToken,
+    revokeProvisioningToken,
+    fetchBinaries,
   }
 })

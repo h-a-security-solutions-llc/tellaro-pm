@@ -153,8 +153,24 @@ export interface AuthDiscoveryResponse {
 
 export interface TokenResponse {
   access_token: string
+  refresh_token: string
   token_type: string
-  expires_in?: number
+  expires_in: number
+}
+
+export interface DeviceSession {
+  id: string
+  device_name: string
+  browser: string
+  browser_version: string
+  os: string
+  os_version: string
+  device_type: string
+  ip_address: string
+  last_ip: string
+  is_current: boolean
+  last_used_at: string
+  created_at: string
 }
 
 /* ------------------------------------------------------------------ */
@@ -167,6 +183,38 @@ export interface Paginated<T> {
   page: number
   page_size: number
   total_pages: number
+}
+
+/* ------------------------------------------------------------------ */
+/*  Agent provisioning                                                */
+/* ------------------------------------------------------------------ */
+
+export interface ProvisioningToken {
+  id: string
+  user_id: string
+  label: string
+  is_used: boolean
+  is_revoked: boolean
+  used_at?: string
+  expires_hours: number
+  created_at: string
+}
+
+export interface ProvisioningTokenCreated {
+  id: string
+  token: string
+  label: string
+  expires_hours: number
+  created_at: string
+}
+
+export interface AgentBinary {
+  platform: string
+  arch: string
+  version: string
+  filename: string
+  size_bytes?: number
+  sha256?: string
 }
 
 /* ------------------------------------------------------------------ */

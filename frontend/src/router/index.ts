@@ -54,9 +54,28 @@ const router = createRouter({
       component: () => import('@/views/AgentsView.vue'),
     },
     {
+      path: '/settings',
+      name: 'settings',
+      component: () => import('@/views/SettingsView.vue'),
+    },
+    {
       path: '/admin',
       name: 'admin',
       component: () => import('@/views/AdminView.vue'),
+    },
+    {
+      path: '/auth/github/callback',
+      name: 'github-callback',
+      meta: { public: true },
+      component: () => import('@/views/LoginView.vue'),
+      props: (route) => ({ provider: 'github', code: route.query.code, state: route.query.state }),
+    },
+    {
+      path: '/auth/oidc/callback',
+      name: 'oidc-callback',
+      meta: { public: true },
+      component: () => import('@/views/LoginView.vue'),
+      props: (route) => ({ provider: 'oidc', code: route.query.code, state: route.query.state }),
     },
   ],
 })

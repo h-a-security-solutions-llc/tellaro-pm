@@ -1,8 +1,8 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
-import { api, ApiError, setToken } from '@/api/client'
-import type { AuthDiscoveryResponse, User } from '@/types'
+import { api, ApiError, setRefreshToken, setToken } from '@/api/client'
+import type { AuthDiscoveryResponse, DeviceSession, User } from '@/types'
 
 export const useAuthStore = defineStore('auth', () => {
   /* ---- state ----------------------------------------------------- */
@@ -31,6 +31,7 @@ export const useAuthStore = defineStore('auth', () => {
       const res = await api.auth.login(email, password)
       token.value = res.access_token
       setToken(res.access_token)
+      setRefreshToken(res.refresh_token)
       await fetchMe()
     } finally {
       isLoading.value = false
@@ -50,6 +51,7 @@ export const useAuthStore = defineStore('auth', () => {
           : await api.auth.oidcCallback(code, state)
       token.value = res.access_token
       setToken(res.access_token)
+      setRefreshToken(res.refresh_token)
       await fetchMe()
     } finally {
       isLoading.value = false
@@ -61,8 +63,11 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       user.value = await api.auth.me()
     } catch (err) {
+      // 401 is handled by the apiFetch interceptor (auto-refresh + force logout)
+      // If we still get here with a 401, the token was already cleared
       if (err instanceof ApiError && err.status === 401) {
-        logout()
+        user.value = null
+        token.value = null
       }
       throw err
     } finally {
@@ -70,21 +75,48 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  function logout(): void {
+  async function logout(): Promise<void> {
+    try {
+      await api.auth.logout()
+    } catch {
+      // Best effort — server may be unreachable
+    }
     user.value = null
     token.value = null
     setToken(null)
+    setRefreshToken(null)
+  }
+
+  /* ---- device sessions ------------------------------------------- */
+
+  async function listSessions(): Promise<DeviceSession[]> {
+    return api.auth.sessions()
+  }
+
+  async function deleteSession(sessionId: string): Promise<void> {
+    await api.auth.deleteSession(sessionId)
+  }
+
+  async function revokeAllSessions(): Promise<number> {
+    const res = await api.auth.revokeAllSessions()
+    return res.revoked
   }
 
   /* ---- init: if we have a stored token, try to fetch user -------- */
   async function init(): Promise<void> {
     if (token.value) {
       setToken(token.value)
+      // Also restore refresh token
+      const storedRefresh = localStorage.getItem('refresh_token')
+      if (storedRefresh) {
+        setRefreshToken(storedRefresh)
+      }
       try {
         await fetchMe()
       } catch {
-        /* token invalid, clear it silently */
-        logout()
+        /* token invalid — apiFetch interceptor handles logout */
+        user.value = null
+        token.value = null
       }
     }
   }
@@ -100,6 +132,9 @@ export const useAuthStore = defineStore('auth', () => {
     handleOAuthCallback,
     fetchMe,
     logout,
+    listSessions,
+    deleteSession,
+    revokeAllSessions,
     init,
   }
 })
