@@ -1,0 +1,28 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.6
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^(backend|agent)/
+      - id: ruff-format
+        files: ^(backend|agent)/
+
+  - repo: https://github.com/pre-commit/mirrors-eslint
+    rev: v9.20.0
+    hooks:
+      - id: eslint
+        files: ^frontend/.*\.[jt]sx?$|^frontend/.*\.vue$
+        additional_dependencies:
+          - eslint@9
+          - typescript-eslint
+          - eslint-plugin-vue
+          - vue-eslint-parser
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
