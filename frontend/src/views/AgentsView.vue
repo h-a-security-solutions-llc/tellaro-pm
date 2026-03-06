@@ -3,11 +3,11 @@ import { onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
 import { useAgentsStore } from '@/stores/agents'
-import type { AgentPersona, ProvisioningTokenCreated } from '@/types'
+import type { AgentLog, AgentPersona, ProvisioningTokenCreated, User } from '@/types'
 
 const store = useAgentsStore()
 
-const activeTab = ref<'agents' | 'work-items' | 'requests' | 'provisioning' | 'downloads'>(
+const activeTab = ref<'agents' | 'work-items' | 'requests' | 'logs' | 'provisioning' | 'downloads'>(
   'agents',
 )
 const expandedAgent = ref<string | null>(null)
@@ -24,6 +24,16 @@ const createdToken = ref<ProvisioningTokenCreated | null>(null)
 const copiedToken = ref(false)
 const installPlatform = ref<'windows' | 'macos' | 'linux'>('windows')
 
+// Logs
+const agentLogs = ref<AgentLog[]>([])
+const logsLoading = ref(false)
+const logsAgentFilter = ref('')
+const logsLevelFilter = ref('')
+let logsRefreshTimer: ReturnType<typeof setInterval> | null = null
+
+// User lookup for displaying agent owners
+const usersMap = ref<Record<string, User>>({})
+
 // Derive server URL from current browser location (what the agent should connect to)
 const serverUrl = window.location.origin
 
@@ -39,8 +49,19 @@ onMounted(async () => {
     store.fetchAgents(),
     store.fetchWorkItems(),
     store.fetchWorkRequests(),
+    api.users.list({ limit: 200 }).then((resp) => {
+      for (const u of resp.users) {
+        usersMap.value[u.id] = u
+      }
+    }),
   ])
 })
+
+function userDisplayName(userId: string): string {
+  const u = usersMap.value[userId]
+  if (!u) return userId.slice(0, 8)
+  return u.display_name || u.email
+}
 
 function toggleAgent(agentId: string): void {
   if (expandedAgent.value === agentId) {
@@ -132,6 +153,32 @@ function dismissCreatedToken(): void {
   createdToken.value = null
 }
 
+async function fetchLogs(): Promise<void> {
+  logsLoading.value = true
+  try {
+    agentLogs.value = await api.agents.allLogs({
+      agent_id: logsAgentFilter.value || undefined,
+      level: logsLevelFilter.value || undefined,
+      limit: 200,
+    })
+  } finally {
+    logsLoading.value = false
+  }
+}
+
+async function switchToLogs(): Promise<void> {
+  activeTab.value = 'logs'
+  await fetchLogs()
+  // Auto-refresh logs every 10 seconds
+  if (logsRefreshTimer) clearInterval(logsRefreshTimer)
+  logsRefreshTimer = setInterval(fetchLogs, 10000)
+}
+
+function agentNameById(agentId: string): string {
+  const agent = store.agents.find((a) => a.id === agentId)
+  return agent?.name ?? agentId.slice(0, 8)
+}
+
 function formatBytes(bytes: number | undefined): string {
   if (!bytes) return 'N/A'
   if (bytes < 1024) return `${bytes} B`
@@ -139,8 +186,19 @@ function formatBytes(bytes: number | undefined): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function downloadUrl(version: string, filename: string): string {
-  return api.provisioning.binaryDownloadUrl(version, filename)
+async function downloadBinary(version: string, filename: string): Promise<void> {
+  const url = api.provisioning.binaryDownloadUrl(version, filename)
+  const token = (await import('@/api/client')).getToken()
+  const resp = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (!resp.ok) return
+  const blob = await resp.blob()
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(a.href)
 }
 </script>
 
@@ -174,6 +232,13 @@ function downloadUrl(version: string, filename: string): string {
       </button>
       <button
         class="tab"
+        :class="{ active: activeTab === 'logs' }"
+        @click="switchToLogs"
+      >
+        Logs
+      </button>
+      <button
+        class="tab"
         :class="{ active: activeTab === 'provisioning' }"
         @click="switchToProvisioning"
       >
@@ -200,7 +265,8 @@ function downloadUrl(version: string, filename: string): string {
             <span :class="['badge', `badge-${agent.status}`]">{{ agent.status }}</span>
           </div>
           <div class="agent-meta">
-            <span class="agent-machine">{{ agent.machine_info }}</span>
+            <span class="agent-owner">{{ userDisplayName(agent.user_id) }}</span>
+            <span class="agent-machine">{{ agent.machine_info.os }}/{{ agent.machine_info.arch }} &middot; {{ agent.machine_info.hostname }}</span>
             <span class="expand-icon">{{ expandedAgent === agent.id ? '&#9650;' : '&#9660;' }}</span>
           </div>
         </div>
@@ -264,6 +330,54 @@ function downloadUrl(version: string, filename: string): string {
           <button class="btn btn-sm btn-primary" @click="handleApprove(req.id)">Approve</button>
           <button class="btn btn-sm btn-danger" @click="handleReject(req.id)">Reject</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Logs -->
+    <div v-else-if="activeTab === 'logs'" class="logs-section">
+      <div class="section-header">
+        <h3>Agent Logs</h3>
+        <div class="logs-filters">
+          <select v-model="logsAgentFilter" class="form-input form-input-sm" @change="fetchLogs">
+            <option value="">All agents</option>
+            <option v-for="agent in store.agents" :key="agent.id" :value="agent.id">
+              {{ agent.name }}
+            </option>
+          </select>
+          <select v-model="logsLevelFilter" class="form-input form-input-sm" @change="fetchLogs">
+            <option value="">All levels</option>
+            <option value="ERROR">ERROR</option>
+            <option value="WARN">WARN</option>
+            <option value="INFO">INFO</option>
+            <option value="DEBUG">DEBUG</option>
+          </select>
+          <button class="btn btn-sm" @click="fetchLogs">Refresh</button>
+        </div>
+      </div>
+
+      <div v-if="logsLoading && agentLogs.length === 0" class="loading-spinner">Loading...</div>
+      <div v-else-if="agentLogs.length === 0" class="empty-state">No logs found.</div>
+      <div v-else class="logs-table-wrap">
+        <table class="logs-table">
+          <thead>
+            <tr>
+              <th class="log-col-time">Time</th>
+              <th class="log-col-level">Level</th>
+              <th class="log-col-agent">Agent</th>
+              <th class="log-col-message">Message</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="log in agentLogs" :key="log.id" :class="`log-row log-${log.level.toLowerCase()}`">
+              <td class="log-col-time">{{ new Date(log.timestamp).toLocaleTimeString() }}</td>
+              <td class="log-col-level">
+                <span :class="`log-badge log-badge-${log.level.toLowerCase()}`">{{ log.level }}</span>
+              </td>
+              <td class="log-col-agent">{{ agentNameById(log.agent_id) }}</td>
+              <td class="log-col-message"><code>{{ log.message }}</code></td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
@@ -408,13 +522,12 @@ function downloadUrl(version: string, filename: string): string {
               <template v-if="binary.size_bytes"> &middot; {{ formatBytes(binary.size_bytes) }}</template>
             </div>
           </div>
-          <a
-            :href="downloadUrl(binary.version, binary.filename)"
+          <button
             class="btn btn-sm btn-primary"
-            download
+            @click="downloadBinary(binary.version, binary.filename)"
           >
             Download
-          </a>
+          </button>
         </div>
       </div>
     </div>
@@ -531,6 +644,12 @@ function downloadUrl(version: string, filename: string): string {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.agent-owner {
+  font-size: 12px;
+  color: var(--color-primary);
+  font-weight: 500;
 }
 
 .agent-machine {
@@ -846,6 +965,80 @@ function downloadUrl(version: string, filename: string): string {
   font-size: 12px;
   color: var(--color-text-secondary);
 }
+
+/* Logs */
+
+.logs-section .section-header {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.logs-filters {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.form-input-sm {
+  padding: 4px 8px;
+  font-size: 13px;
+  min-width: 120px;
+}
+
+.logs-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.logs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.logs-table th {
+  text-align: left;
+  padding: 8px 12px;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  position: sticky;
+  top: 0;
+}
+
+.logs-table td {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: top;
+}
+
+.log-col-time { width: 100px; white-space: nowrap; font-size: 12px; color: var(--color-text-secondary); }
+.log-col-level { width: 70px; }
+.log-col-agent { width: 140px; white-space: nowrap; }
+.log-col-message { font-family: 'SF Mono', 'Fira Code', monospace; word-break: break-word; }
+.log-col-message code { background: none; padding: 0; font-size: 12px; }
+
+.log-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.log-badge-error { background: #fee2e2; color: #991b1b; }
+.log-badge-warn { background: #fef3c7; color: #92400e; }
+.log-badge-info { background: #dbeafe; color: #1e40af; }
+.log-badge-debug { background: #f3f4f6; color: #6b7280; }
+
+.log-row.log-error { background: #fef2f2; }
+.log-row.log-warn { background: #fffbeb; }
 
 .link-btn {
   background: none;

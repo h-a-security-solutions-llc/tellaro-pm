@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from tellaro_pm.agents.logs import query_logs
 from tellaro_pm.agents.schemas import (
     AgentHeartbeat,
     AgentListResponse,
@@ -94,6 +95,38 @@ def deregister_agent(agent_id: str, user: CurrentUser) -> None:
     if agent["user_id"] != user["id"]:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your agent")
     agent_service.deregister(agent_id)
+
+
+# ---------------------------------------------------------------------------
+# Agent logs
+# ---------------------------------------------------------------------------
+
+
+@router.get("/agents/{agent_id}/logs")
+def get_agent_logs(
+    agent_id: str,
+    _user: CurrentUser,
+    level: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    since: Annotated[str | None, Query()] = None,
+) -> list[dict[str, object]]:
+    """Retrieve logs for a specific agent."""
+    agent = agent_service.get(agent_id)
+    if agent is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    return query_logs(agent_id=agent_id, level=level, limit=limit, since=since)
+
+
+@router.get("/agents/logs/all")
+def get_all_agent_logs(
+    user: CurrentUser,
+    agent_id: Annotated[str | None, Query()] = None,
+    level: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    since: Annotated[str | None, Query()] = None,
+) -> list[dict[str, object]]:
+    """Retrieve logs across all agents for the current user."""
+    return query_logs(user_id=str(user["id"]), agent_id=agent_id, level=level, limit=limit, since=since)
 
 
 # ---------------------------------------------------------------------------

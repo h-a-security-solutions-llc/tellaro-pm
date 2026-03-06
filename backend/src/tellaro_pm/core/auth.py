@@ -16,8 +16,13 @@ def verify_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode(), hashed.encode())
 
 
-def create_access_token(subject: str, extra: dict[str, object] | None = None) -> str:
-    expire = datetime.now(UTC) + timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+def create_access_token(
+    subject: str,
+    extra: dict[str, object] | None = None,
+    expires_minutes: int | None = None,
+) -> str:
+    ttl = expires_minutes if expires_minutes is not None else settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES
+    expire = datetime.now(UTC) + timedelta(minutes=ttl)
     payload: dict[str, object] = {"sub": subject, "exp": expire}
     if extra:
         payload.update(extra)

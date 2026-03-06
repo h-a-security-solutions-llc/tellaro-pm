@@ -24,7 +24,6 @@ from tellaro_pm.agents.provisioning_schemas import (
 from tellaro_pm.agents.service import agent_service
 from tellaro_pm.core.auth import create_access_token
 from tellaro_pm.core.dependencies import get_current_user
-from tellaro_pm.core.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -101,19 +100,21 @@ async def exchange_token(body: ProvisioningTokenExchange) -> dict[str, object]:
 
     agent_id = str(agent["id"])
 
-    # Create an agent JWT (longer-lived than user tokens)
+    # Create an agent JWT — 30-day lifetime (much longer than user tokens)
+    agent_token_minutes = 60 * 24 * 30  # 30 days
     access_token = create_access_token(
         subject=user_id,
         extra={
             "agent_id": agent_id,
             "type": "agent",
         },
+        expires_minutes=agent_token_minutes,
     )
 
     return {
         "access_token": access_token,
         "agent_id": agent_id,
-        "expires_in": settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        "expires_in": agent_token_minutes * 60,
     }
 
 

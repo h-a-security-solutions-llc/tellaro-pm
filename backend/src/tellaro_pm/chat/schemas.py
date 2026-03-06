@@ -41,6 +41,8 @@ class ChatSessionCreate(BaseModel):
     scope_id: str | None = None
     title: str = ""
     working_directory: str | None = None
+    agent_id: str | None = None
+    persona_id: str | None = None
 
 
 class ChatSessionUpdate(BaseModel):
@@ -54,6 +56,8 @@ class ChatSessionResponse(BaseModel):
     scope_id: str | None = None
     title: str
     working_directory: str | None = None
+    agent_id: str | None = None
+    persona_id: str | None = None
     participant_ids: list[str] = Field(default_factory=list)
     is_archived: bool
     created_at: str

@@ -56,15 +56,33 @@ export interface Task {
 /*  Agents                                                            */
 /* ------------------------------------------------------------------ */
 
+export interface AgentMachineInfo {
+  os: string
+  arch: string
+  hostname: string
+  home_directory?: string
+}
+
 export interface AgentInstallation {
   id: string
   user_id: string
   name: string
   status: AgentStatus
-  machine_info: string
+  machine_info: AgentMachineInfo
+  capabilities: string[]
   personas: AgentPersona[]
   last_heartbeat?: string
   created_at?: string
+}
+
+export interface AgentLog {
+  id: string
+  agent_id: string
+  user_id: string
+  level: string
+  message: string
+  target: string
+  timestamp: string
 }
 
 export interface AgentPersona {
@@ -87,6 +105,8 @@ export interface ChatSession {
   scope_id?: string
   title?: string
   working_directory?: string
+  agent_id?: string
+  persona_id?: string
   created_by?: string
   created_at: string
   updated_at?: string

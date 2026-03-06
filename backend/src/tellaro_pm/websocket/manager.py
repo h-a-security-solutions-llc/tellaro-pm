@@ -5,6 +5,7 @@ from typing import Any
 
 from starlette.websockets import WebSocket, WebSocketState
 
+from tellaro_pm.agents.logs import store_log_batch
 from tellaro_pm.agents.schemas import WorkItemStatus
 from tellaro_pm.agents.service import agent_service, work_dispatch_service
 
@@ -12,13 +13,15 @@ logger = logging.getLogger(__name__)
 
 
 class ConnectionManager:
-    """Manages WebSocket connections from agent daemons.
+    """Manages WebSocket connections from agent daemons and user chat sessions.
 
     Each agent maintains a single persistent WebSocket connection used to:
     - Receive heartbeats and status updates
     - Push persona configurations
     - Dispatch work items in real-time
     - Receive work item progress and results
+
+    Users connect via per-session WebSockets to receive streaming output.
     """
 
     def __init__(self) -> None:
@@ -26,6 +29,8 @@ class ConnectionManager:
         self._connections: dict[str, WebSocket] = {}
         # agent_id → user_id (for broadcasting to all agents of a user)
         self._agent_user_map: dict[str, str] = {}
+        # session_id → list[WebSocket] (user chat WebSocket connections)
+        self._chat_connections: dict[str, list[WebSocket]] = {}
 
     @property
     def active_connections(self) -> dict[str, WebSocket]:
@@ -77,14 +82,64 @@ class ConnectionManager:
                 sent += 1
         return sent
 
+    # --- User chat WebSocket management ---
+
+    async def connect_chat(self, session_id: str, websocket: WebSocket) -> None:
+        """Register a user WebSocket connection for a chat session."""
+        await websocket.accept()
+        if session_id not in self._chat_connections:
+            self._chat_connections[session_id] = []
+        self._chat_connections[session_id].append(websocket)
+        logger.info("User chat WebSocket connected for session %s", session_id)
+
+    async def disconnect_chat(self, session_id: str, websocket: WebSocket) -> None:
+        """Remove a user WebSocket connection for a chat session."""
+        conns = self._chat_connections.get(session_id, [])
+        if websocket in conns:
+            conns.remove(websocket)
+        if not conns:
+            self._chat_connections.pop(session_id, None)
+        logger.info("User chat WebSocket disconnected for session %s", session_id)
+
+    async def send_to_chat_session(self, session_id: str, message: dict[str, Any]) -> int:
+        """Send a message to all user WebSockets connected to a chat session.
+
+        Returns the number of clients the message was successfully sent to.
+        """
+        conns = self._chat_connections.get(session_id, [])
+        sent = 0
+        dead: list[WebSocket] = []
+        for ws in conns:
+            try:
+                if ws.client_state == WebSocketState.CONNECTED:
+                    await ws.send_json(message)
+                    sent += 1
+                else:
+                    dead.append(ws)
+            except Exception:
+                dead.append(ws)
+        # Clean up dead connections
+        for ws in dead:
+            if ws in conns:
+                conns.remove(ws)
+        return sent
+
     async def handle_message(self, agent_id: str, message: dict[str, Any]) -> None:
         """Route an incoming WebSocket message from an agent to the appropriate handler."""
         msg_type = message.get("type")
 
         if msg_type == "heartbeat":
             await self._handle_heartbeat(agent_id, message)
+        elif msg_type == "log_batch":
+            await self._handle_log_batch(agent_id, message)
         elif msg_type == "work_item_update":
             await self._handle_work_item_update(agent_id, message)
+        elif msg_type == "stream_chunk":
+            await self._handle_stream_chunk(agent_id, message)
+        elif msg_type == "stream_start":
+            await self._handle_stream_event(agent_id, message, "stream_start")
+        elif msg_type == "stream_end":
+            await self._handle_stream_end(agent_id, message)
         elif msg_type == "capability_report":
             await self._handle_capability_report(agent_id, message)
         else:
@@ -149,6 +204,18 @@ class ConnectionManager:
             )
             return
 
+        # Forward status update to user chat WebSocket if linked to a chat session
+        chat_session_id = updated.get("chat_session_id")
+        if isinstance(chat_session_id, str):
+            await self.send_to_chat_session(
+                chat_session_id,
+                {
+                    "type": "work_item_update",
+                    "work_item_id": item_id,
+                    "status": updated.get("status"),
+                },
+            )
+
         await self.send_to_agent(
             agent_id,
             {
@@ -157,6 +224,91 @@ class ConnectionManager:
                 "status": updated.get("status"),
             },
         )
+
+    async def _handle_stream_chunk(self, agent_id: str, message: dict[str, Any]) -> None:
+        """Forward a streaming output chunk from agent to the user's chat WebSocket."""
+        work_item_id = message.get("work_item_id")
+        chat_session_id = message.get("chat_session_id")
+        content = message.get("content", "")
+
+        if not isinstance(chat_session_id, str) and isinstance(work_item_id, str):
+            item = work_dispatch_service.get_work_item(work_item_id)
+            if item:
+                chat_session_id = item.get("chat_session_id")
+
+        if isinstance(chat_session_id, str):
+            await self.send_to_chat_session(
+                chat_session_id,
+                {
+                    "type": "stream_chunk",
+                    "work_item_id": work_item_id,
+                    "content": content,
+                },
+            )
+
+    async def _handle_stream_event(self, agent_id: str, message: dict[str, Any], event_type: str) -> None:
+        """Forward a stream lifecycle event (start) to the user's chat WebSocket."""
+        work_item_id = message.get("work_item_id")
+        chat_session_id = message.get("chat_session_id")
+
+        if not isinstance(chat_session_id, str) and isinstance(work_item_id, str):
+            item = work_dispatch_service.get_work_item(work_item_id)
+            if item:
+                chat_session_id = item.get("chat_session_id")
+
+        if isinstance(chat_session_id, str):
+            await self.send_to_chat_session(
+                chat_session_id,
+                {
+                    "type": event_type,
+                    "work_item_id": work_item_id,
+                },
+            )
+
+    async def _handle_stream_end(self, agent_id: str, message: dict[str, Any]) -> None:
+        """Handle end of streaming — save final output as agent message in chat session."""
+        work_item_id = message.get("work_item_id")
+        chat_session_id = message.get("chat_session_id")
+        final_content = message.get("content", "")
+
+        if not isinstance(chat_session_id, str) and isinstance(work_item_id, str):
+            item = work_dispatch_service.get_work_item(work_item_id)
+            if item:
+                chat_session_id = item.get("chat_session_id")
+
+        # Save final output as an agent message in the chat session
+        if isinstance(chat_session_id, str) and final_content:
+            from tellaro_pm.chat.service import chat_service
+
+            chat_service.send_message(
+                session_id=chat_session_id,
+                sender_id=agent_id,
+                sender_type="agent",
+                content=final_content,
+            )
+
+        if isinstance(chat_session_id, str):
+            await self.send_to_chat_session(
+                chat_session_id,
+                {
+                    "type": "stream_end",
+                    "work_item_id": work_item_id,
+                    "content": final_content,
+                },
+            )
+
+    async def _handle_log_batch(self, agent_id: str, message: dict[str, Any]) -> None:
+        """Store a batch of log entries from an agent."""
+        entries = message.get("entries", [])
+        if not isinstance(entries, list) or not entries:
+            return
+
+        user_id = self._agent_user_map.get(agent_id, "")
+        try:
+            stored = store_log_batch(agent_id, user_id, entries)
+            logger.debug("Stored %d log entries from agent %s", stored, agent_id)
+        except Exception:
+            logger.exception("Failed to store logs from agent %s", agent_id)
 
     async def _handle_capability_report(self, agent_id: str, message: dict[str, Any]) -> None:
         """Process a capability report from an agent (e.g., after plugin load)."""

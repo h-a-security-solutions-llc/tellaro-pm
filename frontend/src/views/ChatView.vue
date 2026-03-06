@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { useAgentsStore } from '@/stores/agents'
 import { useChatStore } from '@/stores/chat'
-import type { AgentPersona, ScopeType } from '@/types'
+import type { AgentInstallation, AgentPersona, ScopeType } from '@/types'
 
 const props = defineProps<{ sessionId?: string }>()
 
@@ -16,7 +16,13 @@ const router = useRouter()
 const messageInput = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
 const showNewSession = ref(false)
-const newSessionForm = ref({ scope_type: 'freeform' as ScopeType, title: '', working_directory: '' })
+const newSessionForm = ref({
+  scope_type: 'freeform' as ScopeType,
+  title: '',
+  working_directory: '',
+  agent_id: '',
+  persona_id: '',
+})
 const filterScope = ref<ScopeType | ''>('')
 
 /* @mention autocomplete */
@@ -41,12 +47,44 @@ const filteredSessions = computed(() => {
   return chatStore.sessions.filter((s) => s.scope_type === filterScope.value)
 })
 
+/** Online agents available for selection */
+const onlineAgents = computed<AgentInstallation[]>(() =>
+  agentsStore.agents.filter((a) => a.status === 'online' || a.status === 'busy'),
+)
+
+/** Personas for the currently selected agent in the new session form */
+const selectedAgentPersonas = computed<AgentPersona[]>(() => {
+  const agentId = newSessionForm.value.agent_id
+  if (!agentId) return []
+  const agent = agentsStore.agents.find((a) => a.id === agentId)
+  return agent?.personas ?? []
+})
+
+/** Whether the new session form is valid */
+const canCreateSession = computed(() => {
+  if (newSessionForm.value.agent_id && !newSessionForm.value.persona_id) return false
+  if (newSessionForm.value.agent_id && selectedAgentPersonas.value.length === 0) return false
+  return true
+})
+
+/** Agent name for the currently selected session */
+const currentAgentName = computed(() => {
+  const agentId = chatStore.currentSession?.agent_id
+  if (!agentId) return null
+  const agent = agentsStore.agents.find((a) => a.id === agentId)
+  return agent?.name ?? agentId
+})
+
 onMounted(async () => {
   await Promise.all([chatStore.fetchSessions(), agentsStore.fetchAgents()])
   if (props.sessionId) {
     await chatStore.selectSession(props.sessionId)
     scrollToBottom()
   }
+})
+
+onUnmounted(() => {
+  chatStore.disconnectChatWs()
 })
 
 watch(
@@ -56,6 +94,14 @@ watch(
       await chatStore.selectSession(newId)
       scrollToBottom()
     }
+  },
+)
+
+/* Auto-scroll when streaming content changes */
+watch(
+  () => chatStore.streamingContent,
+  () => {
+    scrollToBottom()
   },
 )
 
@@ -127,14 +173,42 @@ async function selectSession(sessionId: string): Promise<void> {
   await router.push(`/chat/${sessionId}`)
 }
 
+function onAgentSelected(): void {
+  const agentId = newSessionForm.value.agent_id
+  // Reset persona selection
+  newSessionForm.value.persona_id = ''
+
+  if (agentId) {
+    const agent = agentsStore.agents.find((a) => a.id === agentId)
+    // Auto-populate working directory with agent's home directory
+    if (agent?.machine_info?.home_directory) {
+      newSessionForm.value.working_directory = agent.machine_info.home_directory
+    }
+    // Auto-select first persona if only one exists
+    const personas = agent?.personas ?? []
+    if (personas.length === 1) {
+      newSessionForm.value.persona_id = personas[0].id
+    }
+  } else {
+    newSessionForm.value.working_directory = ''
+  }
+}
+
 async function handleCreateSession(): Promise<void> {
+  // Require persona when agent is selected
+  if (newSessionForm.value.agent_id && !newSessionForm.value.persona_id) {
+    return
+  }
+
   const session = await chatStore.createSession({
     scope_type: newSessionForm.value.scope_type,
     title: newSessionForm.value.title || undefined,
     working_directory: newSessionForm.value.working_directory || undefined,
+    agent_id: newSessionForm.value.agent_id || undefined,
+    persona_id: newSessionForm.value.persona_id || undefined,
   })
   showNewSession.value = false
-  newSessionForm.value = { scope_type: 'freeform', title: '', working_directory: '' }
+  newSessionForm.value = { scope_type: 'freeform', title: '', working_directory: '', agent_id: '', persona_id: '' }
   await router.push(`/chat/${session.id}`)
 }
 
@@ -185,6 +259,9 @@ function senderClass(senderType: string): string {
           <span :class="['badge', `badge-${chatStore.currentSession.scope_type}`]">
             {{ chatStore.currentSession.scope_type }}
           </span>
+          <span v-if="currentAgentName" class="badge badge-agent">
+            {{ currentAgentName }}
+          </span>
         </div>
 
         <div ref="messagesContainer" class="messages-container">
@@ -204,7 +281,17 @@ function senderClass(senderType: string): string {
             </div>
             <div class="message-content">{{ msg.content }}</div>
           </div>
-          <div v-if="chatStore.messages.length === 0 && !chatStore.isLoading" class="empty-state">
+
+          <!-- Streaming response -->
+          <div v-if="chatStore.isStreaming" class="message msg-agent streaming">
+            <div class="message-header">
+              <span class="message-sender">Agent</span>
+              <span class="streaming-indicator">streaming...</span>
+            </div>
+            <div class="message-content">{{ chatStore.streamingContent }}<span class="cursor-blink">|</span></div>
+          </div>
+
+          <div v-if="chatStore.messages.length === 0 && !chatStore.isLoading && !chatStore.isStreaming" class="empty-state">
             No messages yet. Start the conversation.
           </div>
         </div>
@@ -227,10 +314,17 @@ function senderClass(senderType: string): string {
             class="form-input chat-textarea"
             placeholder="Type a message... Use @name to mention an agent"
             rows="2"
+            :disabled="chatStore.isStreaming"
             @input="handleInput"
             @keydown="handleInputKeydown"
           />
-          <button class="btn btn-primary send-btn" @click="handleSend">Send</button>
+          <button
+            class="btn btn-primary send-btn"
+            :disabled="chatStore.isStreaming"
+            @click="handleSend"
+          >
+            Send
+          </button>
         </div>
       </template>
 
@@ -261,18 +355,66 @@ function senderClass(senderType: string): string {
               <option value="task">Task</option>
             </select>
           </div>
+
+          <!-- Agent selector -->
+          <div class="form-group">
+            <label for="session-agent">Agent</label>
+            <select
+              id="session-agent"
+              v-model="newSessionForm.agent_id"
+              class="form-input"
+              @change="onAgentSelected"
+            >
+              <option value="">No agent (manual chat)</option>
+              <option
+                v-for="agent in onlineAgents"
+                :key="agent.id"
+                :value="agent.id"
+              >
+                {{ agent.name }} ({{ agent.machine_info?.hostname ?? 'unknown' }})
+              </option>
+            </select>
+            <div v-if="onlineAgents.length === 0" class="form-hint">
+              No agents online. Start an agent daemon to enable AI chat.
+            </div>
+          </div>
+
+          <!-- Persona selector (when agent is selected) -->
+          <div v-if="newSessionForm.agent_id && selectedAgentPersonas.length > 0" class="form-group">
+            <label for="session-persona">Persona</label>
+            <select id="session-persona" v-model="newSessionForm.persona_id" class="form-input" required>
+              <option value="" disabled>Select a persona</option>
+              <option
+                v-for="persona in selectedAgentPersonas"
+                :key="persona.id"
+                :value="persona.id"
+              >
+                {{ persona.name }} — {{ persona.role_description }}
+              </option>
+            </select>
+          </div>
+          <div v-if="newSessionForm.agent_id && selectedAgentPersonas.length === 0" class="form-group">
+            <div class="form-hint">
+              This agent has no personas configured. Create a persona in the Agents page first.
+            </div>
+          </div>
+
           <div v-if="newSessionForm.scope_type === 'freeform'" class="form-group">
-            <label for="session-wd">Working Directory (optional)</label>
+            <label for="session-wd">Working Directory</label>
             <input
               id="session-wd"
               v-model="newSessionForm.working_directory"
               class="form-input"
               placeholder="/path/to/project"
             />
+            <div v-if="newSessionForm.working_directory" class="form-hint">
+              The agent will run commands in this directory.
+            </div>
           </div>
+
           <div class="modal-actions">
             <button type="button" class="btn" @click="showNewSession = false">Cancel</button>
-            <button type="submit" class="btn btn-primary">Create</button>
+            <button type="submit" class="btn btn-primary" :disabled="!canCreateSession">Create</button>
           </div>
         </form>
       </div>
@@ -384,6 +526,14 @@ function senderClass(senderType: string): string {
   font-weight: 600;
 }
 
+.badge-agent {
+  background: var(--color-success, #22c55e);
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
 .messages-container {
   flex: 1;
   overflow-y: auto;
@@ -416,6 +566,11 @@ function senderClass(senderType: string): string {
   border: 1px solid var(--color-border);
 }
 
+.msg-agent.streaming {
+  border-color: var(--color-primary);
+  border-style: dashed;
+}
+
 .msg-system {
   align-self: center;
   background: var(--color-bg);
@@ -438,6 +593,27 @@ function senderClass(senderType: string): string {
 .message-time {
   font-size: 11px;
   color: var(--color-text-secondary);
+}
+
+.streaming-indicator {
+  font-size: 11px;
+  color: var(--color-primary);
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.cursor-blink {
+  animation: blink 1s step-end infinite;
+  color: var(--color-primary);
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
 }
 
 .message-content {
@@ -515,5 +691,11 @@ function senderClass(senderType: string): string {
 .mention-role {
   font-size: 12px;
   color: var(--color-text-secondary);
+}
+
+.form-hint {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-top: 4px;
 }
 </style>

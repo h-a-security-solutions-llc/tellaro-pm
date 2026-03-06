@@ -20,6 +20,7 @@ ACTIVITY_INDEX = f"{INDEX_PREFIX}tellaro-pm-activity"
 AUTH_DOMAINS_INDEX = f"{INDEX_PREFIX}tellaro-pm-auth-domains"
 DEVICE_SESSIONS_INDEX = f"{INDEX_PREFIX}tellaro-pm-device-sessions"
 PROVISIONING_TOKENS_INDEX = f"{INDEX_PREFIX}tellaro-pm-provisioning-tokens"
+AGENT_LOGS_INDEX = f"{INDEX_PREFIX}tellaro-pm-agent-logs"
 
 _client: OpenSearch | None = None
 
@@ -321,6 +322,19 @@ INDEX_MAPPINGS: dict[str, dict[str, object]] = {
                 "is_revoked": {"type": "boolean"},
                 "used_at": {"type": "date"},
                 "created_at": {"type": "date"},
+            }
+        }
+    },
+    AGENT_LOGS_INDEX: {
+        "mappings": {
+            "properties": {
+                "id": {"type": "keyword"},
+                "agent_id": {"type": "keyword"},
+                "user_id": {"type": "keyword"},
+                "level": {"type": "keyword"},
+                "message": {"type": "text"},
+                "target": {"type": "keyword"},
+                "timestamp": {"type": "date"},
             }
         }
     },

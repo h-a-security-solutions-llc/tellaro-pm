@@ -3,6 +3,7 @@ mod config;
 mod connection;
 mod doctor;
 mod install;
+mod log_stream;
 mod mcp;
 mod provision;
 mod worker;
@@ -79,11 +80,16 @@ enum McpAction {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    tracing_subscriber::registry()
+        .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .with(tracing_subscriber::fmt::layer())
+        .with(log_stream::LogStreamLayer)
         .init();
 
     let cli = Cli::parse();

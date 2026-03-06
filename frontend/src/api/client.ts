@@ -1,6 +1,7 @@
 import type {
   AgentBinary,
   AgentInstallation,
+  AgentLog,
   AgentPersona,
   AuthDiscoveryResponse,
   ChatMessage,
@@ -354,8 +355,11 @@ export const api = {
   /* ------ chat ---------------------------------------------------- */
 
   chat: {
-    sessions(scopeType?: string, scopeId?: string) {
-      return apiFetch<ChatSession[]>(`/chat/sessions${qs({ scope_type: scopeType, scope_id: scopeId })}`)
+    async sessions(scopeType?: string, scopeId?: string) {
+      const resp = await apiFetch<{ items: ChatSession[]; total: number }>(
+        `/chat/sessions${qs({ scope_type: scopeType, scope_id: scopeId })}`,
+      )
+      return resp.items
     },
 
     getSession(id: string) {
@@ -369,10 +373,11 @@ export const api = {
       })
     },
 
-    messages(sessionId: string, limit = 100, before?: string) {
-      return apiFetch<ChatMessage[]>(
+    async messages(sessionId: string, limit = 100, before?: string) {
+      const resp = await apiFetch<{ items: ChatMessage[]; total: number }>(
         `/chat/sessions/${sessionId}/messages${qs({ limit, before })}`,
       )
+      return resp.items
     },
 
     sendMessage(sessionId: string, content: string, mentions?: Array<{ mention_type: string; target_id: string }>) {
@@ -382,16 +387,27 @@ export const api = {
       })
     },
 
-    search(query: string) {
-      return apiFetch<ChatMessage[]>(`/chat/search${qs({ q: query })}`)
+    async search(query: string) {
+      const resp = await apiFetch<{ items: ChatMessage[]; total: number }>(
+        `/chat/search${qs({ q: query })}`,
+      )
+      return resp.items
+    },
+
+    /** Build a WebSocket URL for streaming chat session events. */
+    streamUrl(sessionId: string): string {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const token = _token ?? ''
+      return `${protocol}//${window.location.host}/ws/chat/${sessionId}?token=${encodeURIComponent(token)}`
     },
   },
 
   /* ------ agents -------------------------------------------------- */
 
   agents: {
-    list() {
-      return apiFetch<AgentInstallation[]>('/agents')
+    async list() {
+      const resp = await apiFetch<{ items: AgentInstallation[]; total: number }>('/agents')
+      return resp.items
     },
 
     get(id: string) {
@@ -418,6 +434,14 @@ export const api = {
 
     deletePersona(id: string) {
       return apiFetch<void>(`/personas/${id}`, { method: 'DELETE' })
+    },
+
+    logs(agentId: string, params?: { level?: string; limit?: number; since?: string }) {
+      return apiFetch<AgentLog[]>(`/agents/${agentId}/logs${qs(params ?? {})}`)
+    },
+
+    allLogs(params?: { agent_id?: string; level?: string; limit?: number; since?: string }) {
+      return apiFetch<AgentLog[]>(`/agents/logs/all${qs(params ?? {})}`)
     },
   },
 

@@ -1,9 +1,11 @@
 """FastAPI router for chat sessions and messages."""
 
+import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 
+from tellaro_pm.agents.service import agent_service, work_dispatch_service
 from tellaro_pm.chat.schemas import (
     ChatMessageCreate,
     ChatMessageListResponse,
@@ -16,6 +18,8 @@ from tellaro_pm.chat.schemas import (
 )
 from tellaro_pm.chat.service import chat_service
 from tellaro_pm.core.dependencies import get_current_user
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
 
@@ -45,6 +49,24 @@ def create_session(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="working_directory is only allowed for freeform sessions",
         )
+
+    # Validate agent/persona if provided
+    if body.agent_id:
+        agent = agent_service.get(body.agent_id)
+        if agent is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+        if agent["user_id"] != creator_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent does not belong to you")
+
+        if body.persona_id:
+            persona = agent_service.get_persona(body.persona_id)
+            if persona is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Persona not found")
+            if persona["agent_id"] != body.agent_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Persona does not belong to this agent",
+                )
 
     return chat_service.create_session(creator_id, body.model_dump())
 
@@ -106,19 +128,48 @@ def send_message(
     session_id: str,
     body: ChatMessageCreate,
     user: CurrentUser,
+    background_tasks: BackgroundTasks,
 ) -> dict[str, object]:
-    """Send a message to a chat session."""
+    """Send a message to a chat session.
+
+    If the session is bound to an agent, the message is automatically
+    dispatched as a work item and the agent will stream its response back.
+    """
     session = chat_service.get_session(session_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat session not found")
 
     sender_id = str(user["id"])
-    return chat_service.send_message(
+    message = chat_service.send_message(
         session_id=session_id,
         sender_id=sender_id,
         sender_type=body.sender_type.value,
         content=body.content,
     )
+
+    # Auto-dispatch to agent if session is agent-bound
+    agent_id = session.get("agent_id")
+    persona_id = session.get("persona_id")
+    if agent_id and persona_id and body.sender_type.value == "user":
+        work_item = work_dispatch_service.create_work_item(
+            {
+                "agent_id": agent_id,
+                "persona_id": persona_id,
+                "instruction": body.content,
+                "working_directory": session.get("working_directory"),
+                "chat_session_id": session_id,
+                "chat_message_id": str(message["id"]),
+            }
+        )
+
+        from tellaro_pm.websocket.manager import connection_manager
+
+        async def _dispatch() -> None:
+            await connection_manager.dispatch_work_item(agent_id, work_item)
+
+        background_tasks.add_task(_dispatch)
+
+    return message
 
 
 @router.get("/sessions/{session_id}/messages", response_model=ChatMessageListResponse)

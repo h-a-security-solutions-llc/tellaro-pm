@@ -16,6 +16,7 @@ struct MachineInfo {
     os: String,
     arch: String,
     hostname: String,
+    home_directory: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,6 +43,9 @@ pub async fn exchange_token(
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
             hostname: hostname.clone(),
+            home_directory: dirs::home_dir()
+                .map(|h| h.to_string_lossy().to_string())
+                .unwrap_or_default(),
         },
         capabilities: detect_capabilities(),
     };

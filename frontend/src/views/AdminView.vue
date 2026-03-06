@@ -23,11 +23,11 @@ const userColumns: Column<User>[] = [
 ]
 
 const userFieldSchema = [
-  { name: 'username', type: 'keyword' },
-  { name: 'email', type: 'keyword' },
-  { name: 'display_name', type: 'text' },
-  { name: 'role', type: 'keyword' },
-  { name: 'is_active', type: 'boolean' },
+  { name: 'username', type: 'keyword' as const },
+  { name: 'email', type: 'keyword' as const },
+  { name: 'display_name', type: 'text' as const },
+  { name: 'role', type: 'keyword' as const },
+  { name: 'is_active', type: 'boolean' as const },
 ]
 
 /* -- Domain configs state -- */
@@ -44,8 +44,8 @@ const domainColumns: Column<DomainAuthConfig>[] = [
 ]
 
 const domainFieldSchema = [
-  { name: 'domain', type: 'keyword' },
-  { name: 'provider', type: 'keyword' },
+  { name: 'domain', type: 'keyword' as const },
+  { name: 'provider', type: 'keyword' as const },
 ]
 
 onMounted(async () => {

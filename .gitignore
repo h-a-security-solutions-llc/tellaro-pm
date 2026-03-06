@@ -53,3 +53,13 @@ agent/releases/
 # Logs
 logs/
 *.log
+
+# Temp tokens and session files
+.token_tmp
+.sessions_tmp
+
+# Agent download artifacts (debug/provisioning)
+frontend/agent-downloads/
+
+# Backend lock files
+backend/uv.lock

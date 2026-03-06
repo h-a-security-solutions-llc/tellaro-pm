@@ -62,6 +62,8 @@ class ChatService:
             "scope_id": data.get("scope_id"),
             "title": data.get("title", ""),
             "working_directory": data.get("working_directory"),
+            "agent_id": data.get("agent_id"),
+            "persona_id": data.get("persona_id"),
             "participant_ids": [creator_id],
             "is_archived": False,
             "created_at": now,

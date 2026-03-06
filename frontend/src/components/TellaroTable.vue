@@ -242,7 +242,7 @@ function cellValue(row: T, col: Column<T>): string {
           <tr
             v-for="row in pagedRows"
             v-else
-            :key="String(row[rowKey])"
+            :key="String((row as Record<string, unknown>)[props.rowKey ?? 'id'])"
             class="table-row"
             @click="$emit('rowClick', row)"
           >

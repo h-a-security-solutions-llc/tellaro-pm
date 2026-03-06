@@ -1,4 +1,4 @@
-"""WebSocket endpoint for agent daemon connections."""
+"""WebSocket endpoints for agent daemon connections and user chat streaming."""
 
 import logging
 from typing import Any, cast
@@ -6,6 +6,7 @@ from typing import Any, cast
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
 
 from tellaro_pm.agents.service import agent_service
+from tellaro_pm.chat.service import chat_service
 from tellaro_pm.core.auth import decode_access_token
 from tellaro_pm.core.opensearch import USERS_INDEX, CRUDService
 from tellaro_pm.websocket.manager import connection_manager
@@ -98,3 +99,60 @@ async def agent_websocket(
         logger.exception("Unexpected error in WebSocket loop for agent %s", agent_id)
     finally:
         await connection_manager.disconnect(agent_id)
+
+
+# ---------------------------------------------------------------------------
+# User chat WebSocket — streaming agent responses
+# ---------------------------------------------------------------------------
+
+
+@router.websocket("/ws/chat/{session_id}")
+async def chat_websocket(
+    websocket: WebSocket,
+    session_id: str,
+    token: str = Query(...),
+) -> None:
+    """WebSocket endpoint for streaming chat session output to users.
+
+    Query parameters:
+        token: JWT access token for authentication
+
+    The server pushes messages to the client:
+        stream_start:  Agent has begun processing
+        stream_chunk:  Partial output from the agent
+        stream_end:    Agent finished; includes final content
+        message:       A new chat message was posted (by any participant)
+        work_item_update: Work item status changed
+    """
+    # Authenticate
+    auth_result = _authenticate_ws_token(token)
+    if auth_result is None:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Authentication failed")
+        return
+
+    user_id = auth_result[0]
+
+    # Verify session exists and user is a participant
+    session = chat_service.get_session(session_id)
+    if session is None:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Session not found")
+        return
+
+    participant_ids = session.get("participant_ids", [])
+    if user_id not in participant_ids:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Not a session participant")
+        return
+
+    await connection_manager.connect_chat(session_id, websocket)
+
+    try:
+        while True:
+            # Keep connection alive; we don't expect user messages on this WS
+            # (messages are sent via REST). But handle pings/keep-alive.
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        logger.info("User chat WebSocket disconnected for session %s", session_id)
+    except Exception:
+        logger.exception("Unexpected error in chat WebSocket for session %s", session_id)
+    finally:
+        await connection_manager.disconnect_chat(session_id, websocket)
